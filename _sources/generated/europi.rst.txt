@@ -1,0 +1,6 @@
+﻿europi
+======
+
+.. automodule:: europi
+    :members:
+    :inherited-members:
