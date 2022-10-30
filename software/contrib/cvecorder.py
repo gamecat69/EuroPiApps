@@ -50,7 +50,7 @@ class CVecorder(EuroPiScript):
 
         # Initialize variables
         self.step = 0
-        self.stepLength = 64
+        self.stepLength = 128
         self.clockStep = 0
         self.ActiveCvr = 0
         self.ActiveBank = 0
@@ -71,6 +71,13 @@ class CVecorder(EuroPiScript):
         self.logFileList = []
         self.currentLogFile = ''
         self.maxLogFileName = self.logFilePrefix + str(self.maxLogFiles) + '.log'
+
+        # Number of decimal places to capture CV to
+        self.sampleResolution = 2
+        self.sampleRateConversionVal = 10**self.sampleResolution
+        
+        # Number of analogue samples for each CV capture (see AnalogueReader in europi.py for more info)
+        self.numAinSamples = 2**7
 
         # rotate log files
         self.rotateLog()
@@ -173,7 +180,7 @@ class CVecorder(EuroPiScript):
     def handleClock(self):
 
         # Sample input to 2 decimal places
-        self.CvIn = round(20 * ain.percent(), 2)
+        self.CvIn = round(20 * ain.percent(samples=self.numAinSamples), self.sampleResolution)
 
         # Start recording if pending and on first step
         if self.step == 0 and self.CvRecording[self.ActiveCvr] == 'pending':
@@ -232,9 +239,9 @@ class CVecorder(EuroPiScript):
         # generate output filename
         outputFile = f"saved_state_{self.__class__.__qualname__}_{self.bankToSave}.txt"
 
-        # Convert each value to an int by multiplying by 100. This saves on storage and memory a little
+        # Convert each value to an int by multiplying by self.sampleRateConversionVal. This saves on storage and memory a little
         for i in range(len(self.CVR[self.bankToSave])):
-            self.CVR[self.bankToSave][i] = [int(x * 100) for x in self.CVR[self.bankToSave][i]]
+            self.CVR[self.bankToSave][i] = [int(x * self.sampleRateConversionVal) for x in self.CVR[self.bankToSave][i]]
 
         if self.initTest:
             print('Saving state for bank: ' + str(self.bankToSave))
@@ -278,7 +285,7 @@ class CVecorder(EuroPiScript):
         # Convert from int back to float
         i=0
         for channel in self.CVR[self.bankToSave]:
-            self.CVR[self.bankToSave][i] = [x / 100 for x in self.CVR[self.bankToSave][i]]
+            self.CVR[self.bankToSave][i] = [x / self.sampleRateConversionVal for x in self.CVR[self.bankToSave][i]]
             i += 1
 
     def loadState(self):
@@ -329,7 +336,7 @@ class CVecorder(EuroPiScript):
                         # convert values in the list from int back to float
                         i=0
                         for channel in self.CVR[b]:
-                            self.CVR[b][i] = [x / 100 if x > 0 else 0 for x in self.CVR[b][i]]
+                            self.CVR[b][i] = [x / self.sampleRateConversionVal if x > 0 else 0 for x in self.CVR[b][i]]
                             i += 1
                         
                         # read OK, break from while loop
@@ -468,9 +475,9 @@ class CVecorder(EuroPiScript):
         # Active recording channel
         oled.text(str(self.ActiveBank+1) + ':' + str(self.ActiveCvr+1), 100, 25, 1)
         
-        # Current step
+        # Current step "/(self.stepLength/64" ensures it is always 64 steps long
         oled.rect(lPadding-1, 26, 64, 6, 1)
-        oled.fill_rect(lPadding-1, 26, self.step, 6, 1)
+        oled.fill_rect(lPadding-1, 26, int(self.step/(self.stepLength/64)), 6, 1)
 
         oled.show()
 
