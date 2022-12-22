@@ -127,7 +127,11 @@ class AnalogueReader:
         values = []
         for _ in range(samples or self._samples):
             values.append(self.pin.read_u16())
-        return round(sum(values) / len(values))
+        val = round(sum(values) / len(values))
+        if val < 190: # This is just noise, remove it by setting to 0
+            return 0
+        else:
+            return val
 
     def set_samples(self, samples):
         """Override the default number of sample reads with the given value."""
@@ -145,7 +149,7 @@ class AnalogueReader:
             raise ValueError(f"range expects an int value, got: {steps}")
         percent = self.percent(samples)
         if int(percent) == 1:
-            return steps - 1
+            return steps
         return int(percent * steps)
 
     def choice(self, values, samples=None):
