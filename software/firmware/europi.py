@@ -122,14 +122,16 @@ class AnalogueReader:
         self.pin = ADC(Pin(pin))
         self.set_samples(samples)
 
-    def _sample_adc(self, samples=None):
+    def _sample_adc(self, samples=None, low_dead_zone=190, high_dead_zone=65500):
         # Over-samples the ADC and returns the average.
         values = []
         for _ in range(samples or self._samples):
             values.append(self.pin.read_u16())
         val = round(sum(values) / len(values))
-        if val < 190: # This is just noise, remove it by setting to 0
+        if val < low_dead_zone: # This is just noise, remove it by setting to 0
             return 0
+        elif val > high_dead_zone: # probably noise, set to highest value
+            return 65535
         else:
             return val
 
