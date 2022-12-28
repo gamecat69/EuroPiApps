@@ -16,8 +16,8 @@ analog_in: Different mode, adjusted by setting self.ainMode as follows:
 - Mode 2: Analogue input voltage adjusts the upper poly value
 - [default] Mode 3: Analogue input voltage adjusts the probabilities of outputs 2,3,5,6 sending gates
 
-button_1: Short press (<500ms): Reduce pattern length (using manual pattern length is ON). Long Press (>500ms): Toggle doubletime feature
-button_2: Short press (<500ms): Reduce pattern length (using manual pattern length is ON). Long Press (>500ms): Toggle Manual pattern length feature
+button_1: Short press (<500ms): Reduce pattern length (When manualPatternLengthFeature is True). Long Press (>500ms): Toggle doubletime feature
+button_2: Short press (<500ms): Reduce pattern length (When manualPatternLengthFeature is True). Long Press (>500ms): Toggle Manual pattern length feature
 
 knob_1: Select upper polyrhythm value
 knob_2: Select lower polyrhythm value
@@ -58,6 +58,7 @@ class Probapoly(EuroPiScript):
         self.manualPatternLength = 32  # Default manual pattern length when self.manualPatternLengthFeature is first True
         self.UPPER_BUTTON_PRESS_TIME_LIMIT = 3000 # Used as a workaround to stop phantom button presses (Issue 132)
         self.SHORT_BUTTON_PRESS_TIME_THRESHOLD = 500
+        self.gateVoltage = 10
         
         # Todo: Make this mode accessible from the UI
         # Mode 1: Analogue input toggles double time feature
@@ -118,25 +119,25 @@ class Probapoly(EuroPiScript):
         
         # Play upper gate
         if self.step % self.upper == 0:    
-            cv1.value(1)
+            cv1.voltage(self.gateVoltage)
 
         # Output trigger with fixed and unrelated probabilities
             if randint(0,99) < self.upperProb1:
-                cv2.value(1)
+                cv2.voltage(self.gateVoltage)
 
             if randint(0,99) < self.upperProb2:
-                cv3.value(1)
+                cv3.voltage(self.gateVoltage)
 
         # Play lower gate
         if self.step % self.lower == 0:
-            cv4.value(1)
+            cv4.voltage(self.gateVoltage)
 
             # Output trigger with fixed and unrelated probabilities
             if randint(0,99) < self.lowerProb1:
-                cv5.value(1)
+                cv5.voltage(self.gateVoltage)
 
             if randint(0,99) < self.lowerProb2:
-                cv6.value(1)
+                cv6.voltage(self.gateVoltage)
 
     # Generate pattern length by finding the lowest common multiple (LCM) and greatest common divisor (GCD)
     # https://www.programiz.com/python-programming/examples/lcm
