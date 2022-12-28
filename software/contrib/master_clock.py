@@ -67,6 +67,7 @@ class MasterClockInner(EuroPiScript):
         self.previousClockTime = 0
         self.inputClockDiffs = []
         self.clockSelectionScreenActive = False
+        self.gateVoltage = 10
 
         self.MIN_BPM = 20  # Successfully calibrated to >= 20 and <= 240 BPM
         self.MAX_BPM = 240
@@ -288,7 +289,7 @@ class MasterClockInner(EuroPiScript):
 
     ''' Holds given output (cv) high for pulseWidthMs duration '''
     async def outputPulse(self, cv):
-        cv.voltage(5)
+        cv.voltage(self.gateVoltage)
         await asyncio.sleep_ms(self.pulseWidthMs)
         cv.off()
 
