@@ -42,13 +42,11 @@ class Probapoly(EuroPiScript):
         # Variables
         self.step = 1
         self.clockStep = 0
-        self.resetTimeout = 2000
-        self.maxPolyVal = 32
+        self.resetTimeout = 3000
+        self.maxPolyVal = 16
         self.upper = 1
         self.lower = 3
         self.ainValue = 0
-        self.upperBernoulliProb = 50
-        self.lowerBernoulliProb = 50
         self.upperProb1 = 50
         self.upperProb2 = 25
         self.lowerProb1 = 50
