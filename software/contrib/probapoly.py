@@ -12,9 +12,11 @@ A polyrhythmic sequencer with probability
 
 digital_in: Clock input
 analog_in: Different mode, adjusted by setting self.ainMode as follows:
-- Mode 1: Analogue input toggles double time feature
+- Mode 1: Analogue input voltage adjusts the upper poly value
 - Mode 2: Analogue input voltage adjusts the upper poly value
-- [default] Mode 3: Analogue input voltage adjusts the probabilities of outputs 2,3,5,6 sending gates
+- Mode 3: Analogue input voltage adjusts the probabilities of outputs 2,3,5,6 sending gates
+- Mode 4: Analogue input toggles double time feature
+
 
 button_1: Short press (<500ms): Reduce pattern length (When manualPatternLengthFeature is True). Long Press (>500ms): Toggle doubletime feature
 button_2: Short press (<500ms): Reduce pattern length (When manualPatternLengthFeature is True). Long Press (>500ms): Toggle Manual pattern length feature
@@ -41,7 +43,7 @@ class Probapoly(EuroPiScript):
         self.step = 1
         self.clockStep = 0
         self.resetTimeout = 2000
-        self.maxPolyVal = 23
+        self.maxPolyVal = 32
         self.upper = 1
         self.lower = 3
         self.ainValue = 0
@@ -53,18 +55,12 @@ class Probapoly(EuroPiScript):
         self.lowerProb2 = 25
         self.doubleTime = False
         self.doubleTimeManualOverride = False
-        self.manualPatternLengthFeature = False
-        self.patternLength = self.lcm(self.upper, self.lower)
-        self.manualPatternLength = 32  # Default manual pattern length when self.manualPatternLengthFeature is first True
         self.UPPER_BUTTON_PRESS_TIME_LIMIT = 3000 # Used as a workaround to stop phantom button presses (Issue 132)
         self.SHORT_BUTTON_PRESS_TIME_THRESHOLD = 500
         self.gateVoltage = 10
-        
-        # Todo: Make this mode accessible from the UI
-        # Mode 1: Analogue input toggles double time feature
-        # Mode 2: Analogue input voltage adjusts the upper poly value
-        # Mode 3: Analogue input voltage adjusts the probabilities of outputs 2,3,5,6 sending gates
-        self.ainMode = 3
+        self.ainModes = ['U', 'L', 'P', 'D']
+
+        self.loadState()
 
         @din.handler
         def clockRising():
@@ -94,13 +90,26 @@ class Probapoly(EuroPiScript):
         @b1.handler_falling
         def b1Pressed():
             if ticks_diff(ticks_ms(), b1.last_pressed()) > self.SHORT_BUTTON_PRESS_TIME_THRESHOLD and ticks_diff(ticks_ms(), b1.last_pressed()) < self.UPPER_BUTTON_PRESS_TIME_LIMIT:
-                # toggle double-time feature
-                self.doubleTimeManualOverride = not self.doubleTimeManualOverride
+                
+                if self.ainMode < len(self.ainModes):
+                    self.ainMode += 1
+                else:
+                    self.ainMode = 1
+                    self.doubleTime = False
+
+                if self.ainMode == 4:
+                    # toggle double-time feature
+                    self.doubleTime = True
+                else:
+                    self.doubleTime = False
+
             else:
             # Short press, decrease manual pattern length if self.manualPatternLengthFeature is True
                 if self.manualPatternLengthFeature:
                     self.manualPatternLength -= 1
                     self.patternLength = self.manualPatternLength
+            
+            self.saveState()
 
         @b2.handler_falling
         def b2Pressed():
@@ -114,6 +123,29 @@ class Probapoly(EuroPiScript):
                 if self.manualPatternLengthFeature:
                     self.manualPatternLength += 1
                     self.patternLength = self.manualPatternLength
+            self.saveState()
+
+    ''' Save working vars to a save state file'''
+    def saveState(self):
+        self.state = {
+            "ainMode": self.ainMode,
+            "manualPatternLengthFeature": self.manualPatternLengthFeature,
+            "manualPatternLength": self.manualPatternLength
+        }
+        self.save_state_json(self.state)
+
+
+    ''' Load a previously saved state, or initialize working vars, then save'''
+    def loadState(self):
+        self.state = self.load_state_json()
+        self.ainMode = self.state.get("ainMode", 1)
+        self.manualPatternLengthFeature = self.state.get("manualPatternLengthFeature", False)
+        self.manualPatternLength = self.state.get("manualPatternLength", 32)
+        if self.manualPatternLength:
+            self.patternLength = self.manualPatternLength
+        else:
+            self.patternLength = self.lcm(self.upper, self.lower)
+        self.saveState()
 
     def handleClock(self):
         
@@ -150,18 +182,21 @@ class Probapoly(EuroPiScript):
         return x
 
     def getUpper(self):
-        # Mode 2, use the analogue input voltage to set the upper ratio value
-        if self.ainValue > 0.9 and self.ainMode == 2:
+        # Mode 1, use the analogue input voltage to set the upper ratio value
+        if self.ainValue > 0.9 and self.ainMode == 1:
             self.upper = int((self.maxPolyVal / 100) * self.ainValue) + 1
         else:
             self.upper = k1.read_position(self.maxPolyVal) + 1
 
     def getLower(self):
-        self.lower = k2.read_position(self.maxPolyVal) + 1
+        # Mode 2, use the analogue input voltage to set the lower ratio value
+        if self.ainValue > 0.9 and self.ainMode == 2:
+            self.lower = int((self.maxPolyVal / 100) * self.ainValue) + 1
+        else:
+            self.lower = k2.read_position(self.maxPolyVal) + 1
 
     def getAinValue(self):
         self.ainValue = 100 * ain.percent()
-        #print(self.ainValue)
 
     def updateScreen(self):
         # Clear the screen
@@ -197,6 +232,8 @@ class Probapoly(EuroPiScript):
         oled.rect(rectRightX, 22, rectLength, 8, 1)
         oled.fill_rect(rectRightX, 22, self.lowerProb2//5, 8, 1)
 
+        oled.text(str(self.ainModes[self.ainMode-1]), 90, 22, 1)
+
         if self.doubleTimeManualOverride or self.doubleTime:
             oled.text('!!', 100, 22, 1)
         if self.manualPatternLengthFeature:
@@ -211,17 +248,28 @@ class Probapoly(EuroPiScript):
             self.updateScreen()
 
             # Ain CV toggles doubleTime feature
-            if self.ainMode == 1:
-                if self.ainValue > 10:
+            if self.ainMode == 4:
+                if self.ainValue > 50:
                     self.doubleTime = True
                 else:
                     self.doubleTime = False
             # Ain CV controls probability
-            elif self.ainValue >= 0.9 and self.ainMode == 3:
-                self.upperProb1 = int(self.ainValue * 2)
-                self.upperProb2 = int(self.ainValue * 1)
-                self.lowerProb1 = int(self.ainValue * 2)
-                self.lowerProb2 = int(self.ainValue * 1)
+            if self.ainMode == 3:
+                if self.ainValue >= 0.9:
+                    self.upperProb1 = int(self.ainValue * 2)
+                    self.upperProb2 = int(self.ainValue * 1)
+                    self.lowerProb1 = int(self.ainValue * 2)
+                    self.lowerProb2 = int(self.ainValue * 1)
+                else:
+                    self.upperProb1 = 0
+                    self.upperProb2 = 0
+                    self.lowerProb1 = 0
+                    self.lowerProb2 = 0
+            else:
+                self.upperProb1 = 50
+                self.upperProb2 = 25
+                self.lowerProb1 = 50
+                self.lowerProb2 = 25
 
             if not self.manualPatternLengthFeature:
                 self.patternLength = self.lcm(self.upper, self.lower)
@@ -234,4 +282,5 @@ class Probapoly(EuroPiScript):
 if __name__ == '__main__':
     dm = Probapoly()
     dm.main()
+
 

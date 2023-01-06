@@ -17,9 +17,10 @@ Outputs 1 and 4 always have a probability of 100%. Outputs 2 and 5 have a defaul
 
 digital_in: Clock input
 analog_in: Different mode, adjusted by setting self.ainMode as follows:
-- Mode 1: Analogue input toggles double time feature
+- Mode 1: Analogue input voltage adjusts the upper poly value
 - Mode 2: Analogue input voltage adjusts the upper poly value
-- [default] Mode 3: Analogue input voltage adjusts the probabilities of outputs 2,3,5,6 sending gates
+- Mode 3: Analogue input voltage adjusts the probabilities of outputs 2,3,5,6 sending gates
+- Mode 4: Analogue input toggles double time feature
 
 button_1: 
     Short press (<500ms): Reduce pattern length (using manual pattern length is ON). 
