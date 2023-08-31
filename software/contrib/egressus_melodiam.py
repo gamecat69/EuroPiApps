@@ -317,13 +317,13 @@ class EgressusMelodium(EuroPiScript):
                             # Output the previous voltage to keep things as smooth as possible
                             self.bufferUnderrunCounter[idx] += 1
                             
-                            if self.bufferUnderrunCounter[idx] > 10:
-                                # We have been looping buffer under runs for a while, reset CV
-                                cvs[idx].off()
-                            else:
-                                # Output previus voltage
-                                cvs[idx].voltage(self.previousOutputVoltage[idx])
-                                print(f"[{idx}] under-runs {self.bufferUnderrunCounter[idx]}")
+                            # if self.bufferUnderrunCounter[idx] > 10:
+                            #     # We have been looping buffer under runs for a while, reset CV
+                            #     cvs[idx].off()
+                            # else:
+                                # Output previous voltage
+                            cvs[idx].voltage(self.previousOutputVoltage[idx])
+                            print(f"[{idx}] under-runs {self.bufferUnderrunCounter[idx]}")
                                 #print(f"[{idx}] output V: {self.previousOutputVoltage[idx]}")
                         self.slewBufferPosition[idx] += 1
                     except StopIteration:
