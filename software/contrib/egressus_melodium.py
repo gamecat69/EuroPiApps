@@ -49,7 +49,7 @@ Programming notes:
 
 Outputs -> CVPattern Banks -> CV Patterns data structure:
 
-self.cvPatternBanks[idx][self.CvPattern][self.step]
+self.cvPatternBanks[idx][self.CvPattern][step]
 
 cvPatternBank[idx] - Output: Each list item is a reference to an output
     [maxCvPatterns] - Cv Pattern Banks: Each list item is a reference to a CV Pattern
@@ -106,8 +106,10 @@ class EgressusMelodium(EuroPiScript):
     def __init__(self):
 
         # Initialize variables
-        self.step = 0
+        #self.step = 0
         self.clockStep = 0
+        self.stepPerOutput = [0, 0, 0, 0, 0, 0]
+        self.nextStepPerOutput = [0, 0, 0, 0, 0, 0]
         self.minAnalogInputVoltage = 0.5
         self.CvPattern = 0
         self.numCvPatterns = 1  # Initial number, this can be increased
@@ -379,7 +381,9 @@ class EgressusMelodium(EuroPiScript):
 
             # If I have been running, then stopped for longer than resetTimeout, reset all steps to 0
             if not self.unClockedMode and self.clockStep != 0 and ticks_diff(ticks_ms(), din.last_triggered()) > self.resetTimeout:
-                self.step = 0
+                #self.step = 0
+                for idx in range(len(cvs)):
+                    self.stepPerOutput[idx] = 0
                 # Update screen with the upcoming CV pattern
                 self.screenRefreshNeeded = True
                 self.saveState()
@@ -402,13 +406,12 @@ class EgressusMelodium(EuroPiScript):
             if DEBUG_MODE == 3:
                 print(f"sample rates: {self.samplesPerSec[idx]}")
 
-            # calculate the next step based on the pattern length
-            nextStep = (self.step + (1 * self.outputDivisions[idx])) % self.patternLength
-
             # If the clockstep is a division of the output division
+            # if idx == 0:
+            #     print(f"[{self.clockStep}][{self.stepPerOutput[idx]}][{self.outputDivisions[idx]}]")
             if self.clockStep % (self.outputDivisions[idx]) == 0:
-
                 # flip the flip flop value for LFO mode
+
                 self.outputVoltageFlipFlops[idx] = not self.outputVoltageFlipFlops[idx]
 
                 # Catch buffer over-runs by detecting that not all samples were used in the last cycle
@@ -454,28 +457,36 @@ class EgressusMelodium(EuroPiScript):
                 else:
                     # If square transition, just output the CV value in the pattern associated with the current step
                     if self.outputSlewModes[idx] == 0:
-                        self.squareOutputs[idx] = self.cvPatternBanks[idx][self.CvPattern][self.step]
+                        self.squareOutputs[idx] = self.cvPatternBanks[idx][self.CvPattern][self.stepPerOutput[idx]]
                     else:
                         self.slewArray = self.slewShapes[self.outputSlewModes[idx]](
-                            self.cvPatternBanks[idx][self.CvPattern][self.step],
-                            self.cvPatternBanks[idx][self.CvPattern][nextStep],
+                            self.cvPatternBanks[idx][self.CvPattern][self.stepPerOutput[idx]],
+                            self.cvPatternBanks[idx][self.CvPattern][self.nextStepPerOutput[idx]],
                             self.slewBufferSampleNum[idx],
                             self.slewBuffers[idx]
                             )
+                # if idx == 0:
+                #     print(f"[{self.clockStep}][{self.stepPerOutput[idx]}][{self.outputDivisions[idx]}] Cur: {self.cvPatternBanks[idx][self.CvPattern][self.stepPerOutput[idx]]} Tar: {self.cvPatternBanks[idx][self.CvPattern][self.nextStepPerOutput[idx]]} ")
 
                 # Update the function object reference to the generator function, passing it the latest slewArray sample buffer
                 self.slewGeneratorObjects[idx] = self.slewGenerator(self.slewArray)
 
                 # Go back to the start of the buffer
                 self.slewBufferPosition[idx] = 0
-        
+
+                # Calculate next steps (indexs in CV patterns)
+                self.stepPerOutput[idx] = ((self.stepPerOutput[idx] + 1)) % self.patternLength
+                self.nextStepPerOutput[idx] = ((self.stepPerOutput[idx] + 1)) % self.patternLength
+                # if idx == 0:
+                #     print(f"[{idx}] Updating clock step. Cur: {self.stepPerOutput[idx]} Next: {self.nextStepPerOutput[idx]}")
+
         # Hide the shreaded visual indicator after 2 clock steps
         if self.clockStep > self.shreadedVisClockStep + 2:
             self.shreadedVis = False
 
 
         # Increment / reset step unless we have reached the max step length, or selected pattern length
-        self.step = (self.clockStep % self.patternLength)
+        #self.step = (self.clockStep % self.patternLength)
 
 
     '''Get the k2 value, update params if changed'''
