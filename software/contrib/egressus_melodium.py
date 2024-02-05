@@ -26,7 +26,6 @@ Known Issues:
 To do:
 
 - UX: Tune k2 LFO time behaviour
-- UX: No CV change when division is the same as a pattern length - how to workaround?
 - UX: When in unclocked mode the pattern length cannot be changed - change UI? Or maybe restrict pattern length to 1 (LFO mode only in unclocked mode?)
 - UX: Only shread active output pattern?
 - UX: Update icons for waves, the square up exp down needs to be wider, plus check the others
@@ -87,19 +86,21 @@ Conversely, when there is a fast clock and low output division a higher sample r
 
 """
 
-# Maximum allowed time between incoming 16th note clocks. This is 2 BPM, larger value causes memory issues unless the next two vals are halfed
-MAX_CLOCK_TIME_MS = 3750
+# Min and max clock values. This time is for half a wave cycle.
+MAX_CLOCK_TIME_MS = 3750  # 2BPM / 0.26Hz. Larger causes memory issues
+MIN_CLOCK_TIME_MS = 50    # 150BPM / 10Hz. Smaller can cause squiffy waves
 
 # Max sample rate and clock divisor to keep required buffer sizes within memory limits
 MAX_SAMPLE_RATE = 32
 MAX_OUTPUT_DENOMINATOR = 8
 
-# Calculate maximum buffer size required
+# Calculate maximum slew/interpolsation buffer size required
 SLEW_BUFFER_SIZE_IN_SAMPLES = int((MAX_CLOCK_TIME_MS/1000) * MAX_SAMPLE_RATE * MAX_OUTPUT_DENOMINATOR)
 
 # How much to print to the console?
 DEBUG_MODE = 0 # 0:Nothing, 1:Some things, 2:Lots, 3: Maybe a bit too much for some
 
+# Attempt to avoid knob hysteresis
 KNOB_CHANGE_TOLERANCE = 0.999
 
 class EgressusMelodium(EuroPiScript):
@@ -126,7 +127,6 @@ class EgressusMelodium(EuroPiScript):
         self.lastSlewVoltageOutputTime = [0, 0, 0, 0, 0, 0]
         self.slewGeneratorObjects = [self.slewGenerator([0]), self.slewGenerator([0]), self.slewGenerator([0]), self.slewGenerator([0]), self.slewGenerator([0]), self.slewGenerator([0])]
         self.slewShapes = [self.stepUpStepDown, self.linspace, self.smooth, self.expUpexpDown, self.sharkTooth, self.sharkToothReverse, self.logUpStepDown, self.stepUpExpDown]
-        #self.slewShapes = [self.stepUpStepDown, self.linspace, self.smooth, self.expUpexpDown, self.sharkTooth, self.sharkToothReverse, self.stepUpExpDown]
         self.voltageExtremes=[0, self.maxCvVoltage]
         #self.slewSampleCounter = 0
         self.outputVoltageFlipFlops = [True, True, True, True, True, True] # Flipflops between self.VoltageExtremes for LFO mode
@@ -146,7 +146,6 @@ class EgressusMelodium(EuroPiScript):
         self.unClockedMode = False
         self.unClockedModeIndicator = ['', 'U']
         self.lastClockTime = ticks_ms()
-        self.minLfoCycleMs = 50
         self.bpm = 0
         self.previousOutputVoltage = [0, 0, 0, 0, 0, 0]
         self.slewBufferSampleNum = [0, 0, 0, 0, 0, 0]
@@ -498,7 +497,7 @@ class EgressusMelodium(EuroPiScript):
             # knob has moved
             if self.unClockedMode:
                 # Set LFO speed
-                self.averageMsBetweenClocks = max(self.minLfoCycleMs, int((MAX_CLOCK_TIME_MS / 100) * (self.currentK2Reading-1)) + 1)
+                self.averageMsBetweenClocks = max(MIN_CLOCK_TIME_MS, int((MAX_CLOCK_TIME_MS / 100) * (self.currentK2Reading-1)) + 1)
 
                 # clock rate or output division changes, calculate optimal sample rate
                 self.calculateOptimalSampleRate()
