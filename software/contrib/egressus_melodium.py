@@ -1,12 +1,12 @@
 from europi import *
 import machine
 from time import ticks_diff, ticks_ms
-from random import randint, uniform
+from random import uniform
 from europi_script import EuroPiScript
 import gc
 import math
 
-'''
+"""
 Egressus Melodium (Stepped Melody)
 author: Nik Ansell (github.com/gamecat69)
 date: 03-Feb-24
@@ -19,30 +19,20 @@ labels: sequencer, CV, Clocked LFO, randomness
 Known Issues:
 - When the clock rate or output division changes significantly this creates temporary wave shape discontinuities
 - Input clocks > 150BPM can cause waveshape glitches. Workaround this by dividing the clock first if working at 150BPM or higher.
+- Some input clocks < 15ms can be missed causing glitchy waves to be output
 
-'''
+"""
 
-'''
-To do:
+"""
+Possible future work:
 
-- UX: Tune k2 LFO time behaviour
 - UX: When in unclocked mode the pattern length cannot be changed - change UI? Or maybe restrict pattern length to 1 (LFO mode only in unclocked mode?)
-- UX: Only shread active output pattern?
-- UX: Update icons for waves, the square up exp down needs to be wider, plus check the others
-
-- WIP: Remove code that previously worked with than one CVPattern bank
-    - update generateNewRandomCVPattern()
-    - update load state / save state
-    - Update how cvPattern is selected
-    - Update underlying data structures ? Or maybe leave maxCvPatterns to 1
-
-- Remove unused variables and functions
-
 - Find a use for ain? Change unClocked clock time?
+- See if performance can be optimized to work with clock inputs < 15ms
 
 Doc: Update .md file
 
-'''
+"""
 """
 Programming notes:
 
@@ -86,50 +76,78 @@ Conversely, when there is a fast clock and low output division a higher sample r
 
 """
 
-# Min and max clock values. This time is for half a wave cycle.
-MAX_CLOCK_TIME_MS = 3750  # 2BPM / 0.26Hz. Larger causes memory issues
-MIN_CLOCK_TIME_MS = 50    # 150BPM / 10Hz. Smaller can cause squiffy waves
+# Maximum allowed time between incoming 16th note clocks. This is 2 BPM, larger value causes memory issues unless the next two vals are halfed
+MAX_CLOCK_TIME_MS = 3750
 
 # Max sample rate and clock divisor to keep required buffer sizes within memory limits
 MAX_SAMPLE_RATE = 32
 MAX_OUTPUT_DENOMINATOR = 8
 
-# Calculate maximum slew/interpolsation buffer size required
-SLEW_BUFFER_SIZE_IN_SAMPLES = int((MAX_CLOCK_TIME_MS/1000) * MAX_SAMPLE_RATE * MAX_OUTPUT_DENOMINATOR)
+# Calculate maximum buffer size required
+SLEW_BUFFER_SIZE_IN_SAMPLES = int(
+    (MAX_CLOCK_TIME_MS / 1000) * MAX_SAMPLE_RATE * MAX_OUTPUT_DENOMINATOR
+)
 
 # How much to print to the console?
-DEBUG_MODE = 0 # 0:Nothing, 1:Some things, 2:Lots, 3: Maybe a bit too much for some
+DEBUG_MODE = 0  # 0:Nothing, 1:Some things, 2:Lots, 3: Maybe a bit too much for some
 
-# Attempt to avoid knob hysteresis
 KNOB_CHANGE_TOLERANCE = 0.999
+
+MAX_CV_VOLTAGE = 5
+
+MAX_STEP_LENGTH = 32
+
+# Diff between incoming clocks are stored in the buffer and averaged
+# 5 seems deal with wonky clocks quite well
+CLOCK_DIFF_BUFFER_LEN = 5
 
 class EgressusMelodium(EuroPiScript):
     def __init__(self):
 
         # Initialize variables
-        #self.step = 0
         self.clockStep = 0
         self.stepPerOutput = [0, 0, 0, 0, 0, 0]
         self.nextStepPerOutput = [0, 0, 0, 0, 0, 0]
-        self.minAnalogInputVoltage = 0.5
+        #self.minAnalogInputVoltage = 0.5
         self.CvPattern = 0
-        self.numCvPatterns = 1  # Initial number, this can be increased
         self.resetTimeout = MAX_CLOCK_TIME_MS
-        self.maxCvPatterns = 1  # lower number reduces the chance of memalloc errors
-        self.maxCvVoltage = 5  # The maximum is 9 to maintain single digits in the voltage list
-        self.maxStepLength = 32
         self.screenRefreshNeeded = True
         self.shreadedVis = False
         self.shreadedVisClockStep = 0
-        
+
+        self.numCvPatterns = 1  # Leave at 1 due to memory limitations
+        self.maxCvPatterns = 1  # Leave at 1 due to memory limitations
+
         self.slewArray = []
         self.lastClockTime = 0
         self.lastSlewVoltageOutputTime = [0, 0, 0, 0, 0, 0]
-        self.slewGeneratorObjects = [self.slewGenerator([0]), self.slewGenerator([0]), self.slewGenerator([0]), self.slewGenerator([0]), self.slewGenerator([0]), self.slewGenerator([0])]
-        self.slewShapes = [self.stepUpStepDown, self.linspace, self.smooth, self.expUpexpDown, self.sharkTooth, self.sharkToothReverse, self.logUpStepDown, self.stepUpExpDown]
-        self.voltageExtremes=[0, self.maxCvVoltage]
-        #self.slewSampleCounter = 0
-        self.outputVoltageFlipFlops = [True, True, True, True, True, True] # Flipflops between self.VoltageExtremes for LFO mode
+        self.slewGeneratorObjects = [
+            self.slewGenerator([0]),
+            self.slewGenerator([0]),
+            self.slewGenerator([0]),
+            self.slewGenerator([0]),
+            self.slewGenerator([0]),
+            self.slewGenerator([0]),
+        ]
+        self.slewShapes = [
+            self.stepUpStepDown,
+            self.linspace,
+            self.smooth,
+            self.expUpexpDown,
+            self.sharkTooth,
+            self.sharkToothReverse,
+            self.logUpStepDown,
+            self.stepUpExpDown,
+        ]
+        self.voltageExtremes = [0, MAX_CV_VOLTAGE]
+        self.outputVoltageFlipFlops = [
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+        ]  # Flipflops between self.VoltageExtremes for LFO mode
 
         self.selectedOutput = 0
         self.lastK1Reading = 0
@@ -140,39 +158,40 @@ class EgressusMelodium(EuroPiScript):
         self.running = False
         self.bufferUnderrunCounter = [0, 0, 0, 0, 0, 0]
         self.bufferOverrunSamples = [0, 0, 0, 0, 0, 0]
-        self.samplesPerSec = [0, 0, 0, 0, 0, 0] # Holds the sample rate for each output. Use variable sample rate to get the best balance between smoothing and buffer sizes
+        # Holds the variable sample rate for each output
+        self.samplesPerSec = [0, 0, 0, 0, 0, 0]
         self.msBetweenSamples = [0, 0, 0, 0, 0, 0]
 
         self.unClockedMode = False
-        self.unClockedModeIndicator = ['', 'U']
+        self.unClockedModeIndicator = ["", "U"]
         self.lastClockTime = ticks_ms()
+        self.minLfoCycleMs = 50
         self.bpm = 0
         self.previousOutputVoltage = [0, 0, 0, 0, 0, 0]
         self.slewBufferSampleNum = [0, 0, 0, 0, 0, 0]
         self.slewBufferPosition = [0, 0, 0, 0, 0, 0]
         self.bufferSampleOffsets = [0, 0, 0, 0, 0, 0]
-
-        # pre-create slew buffers to avoid memory allocation errors
-        self.initSlewBuffers()
-        
         self.squareLfoFlipFlops = [False, False, False, False, False, False]
         self.squareOutputs = [0, 0, 0, 0, 0, 0]
 
         self.loadState()
+        # pre-create slew buffers to avoid memory allocation errors
+        self.initSlewBuffers()
 
         # Initialize inputClockDiffs (for bpm detection) using previous self.msBetweenClocks from loadState()
         self.inputClockDiffs = []
-        self.inputClockDiffListLength = 5 # Larger number creates better smoothing with unreliable clocks
-        for n in range (self.inputClockDiffListLength):
+
+        # Init clock diff buffer with the default or saved value
+        for n in range(CLOCK_DIFF_BUFFER_LEN):
             self.inputClockDiffs.append(self.msBetweenClocks)
         self.averageMsBetweenClocks = self.average(self.inputClockDiffs)
 
-        # Clock rate or output dividion changes, recalculate optimal sample rate
+        # Clock rate or output division changed, recalculate optimal sample rate
         self.calculateOptimalSampleRate()
 
         # Dump the entire CV Pattern structure to screen
         if DEBUG_MODE == 3:
-            
+
             print(f"SLEW_BUFFER_SIZE_IN_SAMPLES: {SLEW_BUFFER_SIZE_IN_SAMPLES}")
             for idx, output in enumerate(self.cvPatternBanks):
                 print(f"Output Channel: {idx}")
@@ -185,7 +204,8 @@ class EgressusMelodium(EuroPiScript):
         # Interupt Handling functions
         # -----------------------------
 
-        '''Triggered on each clock into digital input'''
+        """Triggered on each rising edge into digital input"""
+
         @din.handler
         def clockTrigger():
 
@@ -198,51 +218,62 @@ class EgressusMelodium(EuroPiScript):
                 self.lastClockTime = ticks_ms()
                 # Add time diff between clocks to inputClockDiffs list, skipping the first as we have no reference
                 if self.clockStep > 0:
-                    self.inputClockDiffs[self.clockStep % self.inputClockDiffListLength] = newDiffBetweenClocks
+                    self.inputClockDiffs[self.clockStep % CLOCK_DIFF_BUFFER_LEN] = (
+                        newDiffBetweenClocks
+                    )
 
                 # Attempt to BPM change and sync to it
-                if self.clockStep >= self.inputClockDiffListLength:
+                if self.clockStep >= CLOCK_DIFF_BUFFER_LEN:
                     newBpm = self.calculateBpm(self.inputClockDiffs)
                     # Resync If BPM difference is >= 2
                     if abs(newBpm - self.bpm) >= 2:
                         self.bpm = newBpm
                         self.averageMsBetweenClocks = self.average(self.inputClockDiffs)
-                        # clock rate or output division changes, calculate optimal sample rate
+                        # clock rate or output division changed, calculate optimal sample rate
                         self.calculateOptimalSampleRate()
 
                 self.handleClockStep()
                 # Incremenent the clock step
-                self.clockStep +=1
+                self.clockStep += 1
 
-        '''Triggered when B1 is pressed and released'''
+        """Triggered when B1 is pressed and released"""
+
         @b1.handler_falling
         def b1Pressed():
-            if ticks_diff(ticks_ms(), b1.last_pressed()) > 2000 and ticks_diff(ticks_ms(), b1.last_pressed()) < 5000:
+            if (
+                ticks_diff(ticks_ms(), b1.last_pressed()) > 2000
+                and ticks_diff(ticks_ms(), b1.last_pressed()) < 5000
+            ):
                 # long press
                 self.generateNewRandomCVPattern(new=False, activePatternOnly=True)
                 self.shreadedVis = True
                 self.screenRefreshNeeded = True
                 self.shreadedVisClockStep = self.clockStep
                 self.saveState()
-            elif ticks_diff(ticks_ms(), b1.last_pressed()) >  300:
+            elif ticks_diff(ticks_ms(), b1.last_pressed()) > 300:
                 # medium press
-                #self.saveState()
+                # self.saveState()
                 pass
             else:
                 # short press
-                self.selectedOutput = (self.selectedOutput + 1) % 6
+                self.outputSlewModes[self.selectedOutput] = (
+                    self.outputSlewModes[self.selectedOutput] + 1
+                ) % len(self.slewShapes)
                 self.screenRefreshNeeded = True
                 self.saveState()
 
+        """Triggered when B2 is pressed and released"""
 
-        '''Triggered when B2 is pressed and released'''
         @b2.handler_falling
         def b2Pressed():
-            if ticks_diff(ticks_ms(), b2.last_pressed()) > 2000 and ticks_diff(ticks_ms(), b2.last_pressed()) < 5000:
+            if (
+                ticks_diff(ticks_ms(), b2.last_pressed()) > 2000
+                and ticks_diff(ticks_ms(), b2.last_pressed()) < 5000
+            ):
                 # long press
-                #self.saveState()
+                # self.saveState()
                 pass
-            elif ticks_diff(ticks_ms(), b2.last_pressed()) >  300:
+            elif ticks_diff(ticks_ms(), b2.last_pressed()) > 300:
                 # medium press
                 self.unClockedMode = not self.unClockedMode
                 if self.unClockedMode:
@@ -250,86 +281,114 @@ class EgressusMelodium(EuroPiScript):
                 self.saveState()
             else:
                 # short press
-                self.outputSlewModes[self.selectedOutput] = (self.outputSlewModes[self.selectedOutput] + 1) % len(self.slewShapes)
+                self.selectedOutput = (self.selectedOutput + 1) % 6
                 self.screenRefreshNeeded = True
                 self.saveState()
 
     """ Calculate optimal sample rate for smooth CV output while using minimal memory """
+
     def calculateOptimalSampleRate(self):
         for idx in range(len(cvs)):
-            self.samplesPerSec[idx] = int(min( (MAX_SAMPLE_RATE / self.outputDivisions[idx]) * (MAX_CLOCK_TIME_MS / self.averageMsBetweenClocks), MAX_SAMPLE_RATE))
+            self.samplesPerSec[idx] = int(
+                min(
+                    (MAX_SAMPLE_RATE / self.outputDivisions[idx])
+                    * (MAX_CLOCK_TIME_MS / self.averageMsBetweenClocks),
+                    MAX_SAMPLE_RATE,
+                )
+            )
             self.msBetweenSamples[idx] = int(1000 / self.samplesPerSec[idx])
 
-    '''Create slew buffers and fill with zeros'''
+    """Create slew buffers and fill with zeros"""
+
     def initSlewBuffers(self):
         self.slewBuffers = []
-        for n in range(6): # for each output 0-5
-            self.slewBuffers.append([]) # add new empty list to the buffer list
+        for n in range(6):  # for each output 0-5
+            self.slewBuffers.append([])  # add new empty list to the buffer list
             for m in range(SLEW_BUFFER_SIZE_IN_SAMPLES):
                 self.slewBuffers[n].append(0)
 
-    def clearSlewBuffers(self):
-        for n in range(6): # for each output 0-5
-            for m in range(len(self.slewBuffers[n])):
-                self.slewBuffers[n][m] = 0
+    """Calc BPM from time between incoming clocks (ms)"""
 
     def bpmFromMs(self, ms):
-        return int(((1/(ms/1000))*60)/4)
+        return int(((1 / (ms / 1000)) * 60) / 4)
+
+    """Returns BPM from input list of milliseconds between clocks"""
 
     def calculateBpm(self, list):
         self.averageDiff = self.average(list)
         return self.bpmFromMs(self.averageDiff)
 
+    """Pythonic mean average function"""
+
     def average(self, list):
         myList = list.copy()
         return sum(myList) / len(myList)
 
-    '''Initialize CV pattern banks'''
+    """Initialize CV pattern banks"""
+
     def initCvPatternBanks(self):
-        # Init CV pattern banks
+        # Init CV pattern banks, one for each output
         self.cvPatternBanks = [[], [], [], [], [], []]
         for n in range(self.maxCvPatterns):
             self.generateNewRandomCVPattern(self)
-        return self.cvPatternBanks 
+        return self.cvPatternBanks
 
-    '''Generate new CV pattern for existing bank or create a new bank'''
+    """Generate new CV pattern for existing bank or create a new bank"""
+
     def generateNewRandomCVPattern(self, new=True, activePatternOnly=False):
+    # Note: This function is capable of working with multiple pattern banks
+    #  However, due to current memory limitations onlly one pattern bank is used
         try:
             gc.collect()
             if new:
+            # new flag provided, create new list
                 if activePatternOnly:
-                    self.cvPatternBanks[self.selectedOutput].append(self.generateRandomPattern(self.maxStepLength, 0, self.maxCvVoltage))
+                    self.cvPatternBanks[self.selectedOutput].append(
+                        self.generateRandomPattern(MAX_STEP_LENGTH, 0, MAX_CV_VOLTAGE)
+                    )
                 else:
                     for pattern in self.cvPatternBanks:
-                        pattern.append(self.generateRandomPattern(self.maxStepLength, 0, self.maxCvVoltage))
+                        pattern.append(
+                            self.generateRandomPattern(MAX_STEP_LENGTH, 0, MAX_CV_VOLTAGE)
+                        )
             else:
+            # Update existing list
                 if activePatternOnly:
-                    self.cvPatternBanks[self.selectedOutput][self.CvPattern] = self.generateRandomPattern(self.maxStepLength, 0, self.maxCvVoltage)
+                    self.cvPatternBanks[self.selectedOutput][self.CvPattern] = (
+                        self.generateRandomPattern(MAX_STEP_LENGTH, 0, MAX_CV_VOLTAGE)
+                    )
                 else:
                     for pattern in self.cvPatternBanks:
-                        pattern[self.CvPattern] = self.generateRandomPattern(self.maxStepLength, 0, self.maxCvVoltage)
+                        pattern[self.CvPattern] = self.generateRandomPattern(
+                            MAX_STEP_LENGTH, 0, MAX_CV_VOLTAGE
+                        )
             return True
         except Exception:
             return False
 
-    '''Generate a random pattern between min and max of the desired length'''
+    """Generate a random pattern between min and max of the desired length"""
+
     def generateRandomPattern(self, length, min, max):
-        self.t=[]
+        self.t = []
         for i in range(0, length):
-            self.t.append(round(uniform(min,max),3))
+            self.t.append(round(uniform(min, max), 3))
         return self.t
 
+    """Entry point - main loop"""
 
-    '''Entry point - main loop'''
     def main(self):
         while True:
             self.updateScreen()
-            self.getK2Value()
+            self.getK1Value()
             self.getOutputDivision()
 
             # Cycle through outputs, process when needed
             for idx in range(len(cvs)):
-                if ticks_diff(ticks_ms(), self.lastSlewVoltageOutputTime[idx]) >= self.msBetweenSamples[idx] and self.running:
+                if (
+                    ticks_diff(ticks_ms(), self.lastSlewVoltageOutputTime[idx])
+                    >= self.msBetweenSamples[idx]
+                    and self.running
+                ):
 
                     try:
 
@@ -355,8 +414,12 @@ class EgressusMelodium(EuroPiScript):
                                 diff = self.slewBufferPosition[idx] - self.slewBufferSampleNum[idx]
                                 # Print an error if we are 2 or more samples out
                                 if diff >= 2:
-                                    print(f"[{self.clockStep}][{idx}] Buffer underrun ({diff}). Using previous voltage: {self.previousOutputVoltage[idx]}")
-                                    print(f"[{self.clockStep}][{idx}] Current sample num: {self.slewBufferPosition[idx]} Buffer size: {self.slewBufferSampleNum[idx]}")
+                                    print(
+                                        f"[{self.clockStep}][{idx}] Buffer underrun ({diff}). Using previous voltage: {self.previousOutputVoltage[idx]}"
+                                    )
+                                    print(
+                                        f"[{self.clockStep}][{idx}] Current sample num: {self.slewBufferPosition[idx]} Buffer size: {self.slewBufferSampleNum[idx]}"
+                                    )
 
                         if self.running:
                             self.slewBufferPosition[idx] += 1
@@ -368,19 +431,25 @@ class EgressusMelodium(EuroPiScript):
                         continue
 
                     if self.running:
-                        #self.slewSampleCounter += 1
+                        # self.slewSampleCounter += 1
                         self.lastSlewVoltageOutputTime[idx] = ticks_ms()
 
             # If we are not being clocked, trigger a clock after the configured clock time
-            if self.unClockedMode and ticks_diff(ticks_ms(), self.lastClockTime) >= self.averageMsBetweenClocks:
+            if (
+                self.unClockedMode
+                and ticks_diff(ticks_ms(), self.lastClockTime) >= self.averageMsBetweenClocks
+            ):
                 self.running = True
                 self.lastClockTime = ticks_ms()
                 self.handleClockStep()
-                self.clockStep +=1
+                self.clockStep += 1
 
             # If I have been running, then stopped for longer than resetTimeout, reset all steps to 0
-            if not self.unClockedMode and self.clockStep != 0 and ticks_diff(ticks_ms(), din.last_triggered()) > self.resetTimeout:
-                #self.step = 0
+            if (
+                not self.unClockedMode
+                and self.clockStep != 0
+                and ticks_diff(ticks_ms(), din.last_triggered()) > self.resetTimeout
+            ):
                 for idx in range(len(cvs)):
                     self.stepPerOutput[idx] = 0
                 # Update screen with the upcoming CV pattern
@@ -395,8 +464,8 @@ class EgressusMelodium(EuroPiScript):
                 self.slewBufferPosition = [0, 0, 0, 0, 0, 0]
                 self.bufferSampleOffsets = [0, 0, 0, 0, 0, 0]
 
+    """Advances step and generates new slew voltages to next value in CV pattern"""
 
-    '''Advances step and generates voltage slew voltages to next value in CV pattern'''
     def handleClockStep(self):
 
         # Cycle through outputs and generate slew for each
@@ -406,36 +475,57 @@ class EgressusMelodium(EuroPiScript):
                 print(f"sample rates: {self.samplesPerSec[idx]}")
 
             # If the clockstep is a division of the output division
-            # if idx == 0:
-            #     print(f"[{self.clockStep}][{self.stepPerOutput[idx]}][{self.outputDivisions[idx]}]")
             if self.clockStep % (self.outputDivisions[idx]) == 0:
                 # flip the flip flop value for LFO mode
 
                 self.outputVoltageFlipFlops[idx] = not self.outputVoltageFlipFlops[idx]
 
                 # Catch buffer over-runs by detecting that not all samples were used in the last cycle
-                if self.clockStep > self.inputClockDiffListLength and not self.unClockedMode:
-                    self.bufferOverrunSamples[idx] = int(self.slewBufferPosition[idx] - self.slewBufferSampleNum[idx])
+                if self.clockStep > CLOCK_DIFF_BUFFER_LEN and not self.unClockedMode:
+                    self.bufferOverrunSamples[idx] = int(
+                        self.slewBufferPosition[idx] - self.slewBufferSampleNum[idx]
+                    )
                     if DEBUG_MODE == 3:
-                        print(f"[{self.clockStep}][{idx}] bufferOverrunSamples: {self.bufferOverrunSamples[idx]}")
-                    self.bufferSampleOffsets[idx] = self.bufferSampleOffsets[idx] - self.bufferOverrunSamples[idx]
+                        print(
+                            f"[{self.clockStep}][{idx}] bufferOverrunSamples: {self.bufferOverrunSamples[idx]}"
+                        )
+                    self.bufferSampleOffsets[idx] = (
+                        self.bufferSampleOffsets[idx] - self.bufferOverrunSamples[idx]
+                    )
 
                 else:
                     self.bufferSampleOffsets[idx] = 0
 
-                
                 # Set the target number of samples for the next cycle, factoring in any previous overruns
                 if DEBUG_MODE == 3:
-                    print(f"[{self.clockStep}][{idx}] previousTarget: {self.slewBufferSampleNum[idx]}")
+                    print(
+                        f"[{self.clockStep}][{idx}] previousTarget: {self.slewBufferSampleNum[idx]}"
+                    )
 
                 # Calculate the number of samples needed until the next clock
-                self.slewBufferSampleNum[idx] = min(SLEW_BUFFER_SIZE_IN_SAMPLES, int(((self.averageMsBetweenClocks / 1000) * self.outputDivisions[idx] * self.samplesPerSec[idx]) - self.bufferSampleOffsets[idx]))
+                self.slewBufferSampleNum[idx] = min(
+                    SLEW_BUFFER_SIZE_IN_SAMPLES,
+                    int(
+                        (
+                            (self.averageMsBetweenClocks / 1000)
+                            * self.outputDivisions[idx]
+                            * self.samplesPerSec[idx]
+                        )
+                        - self.bufferSampleOffsets[idx]
+                    ),
+                )
                 if DEBUG_MODE == 3:
-                    print(f"[{self.clockStep}][{idx}] Time(ms) between clocks: {self.averageMsBetweenClocks}")
-                    print(f"[{self.clockStep}][{idx}] slewBufferSampleNum: {self.slewBufferSampleNum}. Max: {SLEW_BUFFER_SIZE_IN_SAMPLES}")
+                    print(
+                        f"[{self.clockStep}][{idx}] Time(ms) between clocks: {self.averageMsBetweenClocks}"
+                    )
+                    print(
+                        f"[{self.clockStep}][{idx}] slewBufferSampleNum: {self.slewBufferSampleNum}. Max: {SLEW_BUFFER_SIZE_IN_SAMPLES}"
+                    )
 
                 if DEBUG_MODE == 3:
-                    print(f"[{self.clockStep}][{idx}] bufferSampleOffset (AFTER): {self.bufferSampleOffsets[idx]}")
+                    print(
+                        f"[{self.clockStep}][{idx}] bufferSampleOffset (AFTER): {self.bufferSampleOffsets[idx]}"
+                    )
                     print(f"[{self.clockStep}][{idx}] newTarget: {self.slewBufferSampleNum[idx]}")
 
                 # If length is one, cycle between high and low voltages (traditional LFO)
@@ -445,27 +535,29 @@ class EgressusMelodium(EuroPiScript):
                     # If square transition, set next output value to be one of the voltage extremes (flipping each time)
                     if self.outputSlewModes[idx] == 0:
                         self.squareLfoFlipFlops[idx] = not self.squareLfoFlipFlops[idx]
-                        self.squareOutputs[idx] = self.voltageExtremes[int(self.squareLfoFlipFlops[idx])]
+                        self.squareOutputs[idx] = self.voltageExtremes[
+                            int(self.squareLfoFlipFlops[idx])
+                        ]
                     else:
                         self.slewArray = self.slewShapes[self.outputSlewModes[idx]](
                             self.voltageExtremes[int(self.outputVoltageFlipFlops[idx])],
                             self.voltageExtremes[int(not self.outputVoltageFlipFlops[idx])],
                             self.slewBufferSampleNum[idx],
-                            self.slewBuffers[idx]
-                            )
+                            self.slewBuffers[idx],
+                        )
                 else:
                     # If square transition, just output the CV value in the pattern associated with the current step
                     if self.outputSlewModes[idx] == 0:
-                        self.squareOutputs[idx] = self.cvPatternBanks[idx][self.CvPattern][self.stepPerOutput[idx]]
+                        self.squareOutputs[idx] = self.cvPatternBanks[idx][self.CvPattern][
+                            self.stepPerOutput[idx]
+                        ]
                     else:
                         self.slewArray = self.slewShapes[self.outputSlewModes[idx]](
                             self.cvPatternBanks[idx][self.CvPattern][self.stepPerOutput[idx]],
                             self.cvPatternBanks[idx][self.CvPattern][self.nextStepPerOutput[idx]],
                             self.slewBufferSampleNum[idx],
-                            self.slewBuffers[idx]
-                            )
-                # if idx == 0:
-                #     print(f"[{self.clockStep}][{self.stepPerOutput[idx]}][{self.outputDivisions[idx]}] Cur: {self.cvPatternBanks[idx][self.CvPattern][self.stepPerOutput[idx]]} Tar: {self.cvPatternBanks[idx][self.CvPattern][self.nextStepPerOutput[idx]]} ")
+                            self.slewBuffers[idx],
+                        )
 
                 # Update the function object reference to the generator function, passing it the latest slewArray sample buffer
                 self.slewGeneratorObjects[idx] = self.slewGenerator(self.slewArray)
@@ -476,59 +568,59 @@ class EgressusMelodium(EuroPiScript):
                 # Calculate next steps (indexs in CV patterns)
                 self.stepPerOutput[idx] = ((self.stepPerOutput[idx] + 1)) % self.patternLength
                 self.nextStepPerOutput[idx] = ((self.stepPerOutput[idx] + 1)) % self.patternLength
-                # if idx == 0:
-                #     print(f"[{idx}] Updating clock step. Cur: {self.stepPerOutput[idx]} Next: {self.nextStepPerOutput[idx]}")
 
         # Hide the shreaded visual indicator after 2 clock steps
         if self.clockStep > self.shreadedVisClockStep + 2:
             self.shreadedVis = False
 
 
-        # Increment / reset step unless we have reached the max step length, or selected pattern length
-        #self.step = (self.clockStep % self.patternLength)
+    """Get the k1 value, update params if changed"""
 
+    def getK1Value(self):
 
-    '''Get the k2 value, update params if changed'''
-    def getK2Value(self):
+        self.currentK1Reading = k1.read_position(100) + 1
 
-        self.currentK2Reading = k2.read_position(100) + 1
-        
-        if abs(self.currentK2Reading - self.lastK2Reading) > KNOB_CHANGE_TOLERANCE:
+        if abs(self.currentK1Reading - self.lastK1Reading) > KNOB_CHANGE_TOLERANCE:
             # knob has moved
             if self.unClockedMode:
                 # Set LFO speed
-                self.averageMsBetweenClocks = max(MIN_CLOCK_TIME_MS, int((MAX_CLOCK_TIME_MS / 100) * (self.currentK2Reading-1)) + 1)
+                self.averageMsBetweenClocks = max(
+                    self.minLfoCycleMs,
+                    int((MAX_CLOCK_TIME_MS / 100) * (self.currentK1Reading - 1)) + 1,
+                )
 
-                # clock rate or output division changes, calculate optimal sample rate
+                # clock rate or output division changed, calculate optimal sample rate
                 self.calculateOptimalSampleRate()
 
             else:
                 # Set pattern length
-                self.patternLength = int((self.maxStepLength / 100) * (self.currentK2Reading-1)) + 1
-                
+                self.patternLength = (
+                    int((MAX_STEP_LENGTH / 100) * (self.currentK1Reading - 1)) + 1
+                )
+
             # Something changed, update screen and save state
             self.saveState()
             self.screenRefreshNeeded = True
-        
-        self.lastK2Reading = self.currentK2Reading
 
+        self.lastK1Reading = self.currentK1Reading
 
-    '''Get the output division from k1'''
+    """Get the output division from k2"""
+
     def getOutputDivision(self):
-        #previousOutputDivision = self.outputDivisions[self.selectedOutput]
-        self.currentK1Reading = (k1.read_position(MAX_OUTPUT_DENOMINATOR) + 1)
-        
-        if self.currentK1Reading != self.lastK1Reading:
-            self.outputDivisions[self.selectedOutput] = (k1.read_position(MAX_OUTPUT_DENOMINATOR) + 1)
+        # previousOutputDivision = self.outputDivisions[self.selectedOutput]
+        self.currentK2Reading = k2.read_position(MAX_OUTPUT_DENOMINATOR) + 1
+
+        if self.currentK2Reading != self.lastK2Reading:
+            self.outputDivisions[self.selectedOutput] = k2.read_position(MAX_OUTPUT_DENOMINATOR) + 1
             self.screenRefreshNeeded = True
-            self.lastK1Reading = self.currentK1Reading
-            # clock rate or output division changes, calculate optimal sample rate
+            self.lastK2Reading = self.currentK2Reading
+            # clock rate or output division changed, calculate optimal sample rate
             self.calculateOptimalSampleRate()
 
             self.saveState()
 
+    """ Save working vars to a save state file"""
 
-    ''' Save working vars to a save state file'''
     def saveState(self):
         self.state = {
             "cvPatternBanks": self.cvPatternBanks,
@@ -537,11 +629,12 @@ class EgressusMelodium(EuroPiScript):
             "outputDivisions": self.outputDivisions,
             "patternLength": self.patternLength,
             "msBetweenClocks": self.msBetweenClocks,
-            "unClockedMode": self.unClockedMode
+            "unClockedMode": self.unClockedMode,
         }
         self.save_state_json(self.state)
 
-    ''' Load a previously saved state, or initialize working vars, then save'''
+    """ Load a previously saved state, or initialize working vars, then save"""
+
     def loadState(self):
         self.state = self.load_state_json()
         self.cvPatternBanks = self.state.get("cvPatternBanks", [])
@@ -555,24 +648,27 @@ class EgressusMelodium(EuroPiScript):
         if len(self.cvPatternBanks) == 0:
             self.initCvPatternBanks()
             if DEBUG_MODE == 3:
-                print('Initializing CV Pattern banks')
+                print("Initializing CV Pattern banks")
         else:
             if DEBUG_MODE == 3:
                 print(f"Loaded {len(self.cvPatternBanks[0])} CV Pattern Banks")
-        
 
         self.saveState()
         # Let the rest of the script know how many pattern banks we have
         self.numCvPatterns = len(self.cvPatternBanks[0])
 
-    def draw_wave(self):
-        if self.outputSlewModes[self.selectedOutput] == 0: # stepUpStepDown
+    """UI wave visualizations"""
+
+    def drawWave(self):
+        # oled.pixel(x,y, colour)
+        # oled.vline(x,y.height,colout)
+        if self.outputSlewModes[self.selectedOutput] == 0:  # stepUpStepDown
             oled.vline(3, 24, 8, 1)
             oled.hline(3, 24, 6, 1)
             oled.vline(9, 24, 8, 1)
             oled.hline(9, 31, 6, 1)
             oled.vline(15, 24, 8, 1)
-        elif self.outputSlewModes[self.selectedOutput] == 1: # linspace
+        elif self.outputSlewModes[self.selectedOutput] == 1:  # linspace
             oled.pixel(3, 29, 1)
             oled.pixel(4, 28, 1)
             oled.pixel(5, 27, 1)
@@ -586,50 +682,51 @@ class EgressusMelodium(EuroPiScript):
             oled.pixel(13, 27, 1)
             oled.pixel(14, 28, 1)
             oled.pixel(15, 29, 1)
-        elif self.outputSlewModes[self.selectedOutput] == 2: # smooth (cosine)
-            oled.pixel(3, 23, 1)
-            oled.pixel(4, 23, 1)
-            oled.pixel(5, 24, 1)
-            oled.pixel(6, 25, 1)
-            oled.pixel(6, 26, 1)
-            oled.pixel(6, 27, 1)
-            oled.pixel(7, 28, 1)
-            oled.pixel(7, 29, 1)
-            oled.pixel(7, 30, 1)
-            oled.pixel(8, 31, 1)
-            oled.pixel(9, 31, 1)
-            oled.pixel(10, 31, 1)
-            oled.pixel(11, 30, 1)
-            oled.pixel(11, 29, 1)
-            oled.pixel(11, 28, 1)
-            oled.pixel(12, 27, 1)
-            oled.pixel(12, 26, 1)
-            oled.pixel(12, 25, 1)
-            oled.pixel(13, 24, 1)
-            oled.pixel(14, 23, 1)
-            oled.pixel(15, 23, 1)
-            #oled.pixel(16, 24, 1)
-        elif self.outputSlewModes[self.selectedOutput] == 3: # expUpexpDown
+        elif self.outputSlewModes[self.selectedOutput] == 2:  # smooth (cosine)
             oled.pixel(3, 31, 1)
-            oled.pixel(4, 30, 1)
-            oled.pixel(5, 30, 1)
-            oled.pixel(6, 29, 1)
-            oled.pixel(6, 29, 1)
-            oled.pixel(6, 27, 1)
-            oled.pixel(7, 26, 1)
-            oled.pixel(8, 25, 1)
+            oled.pixel(3, 30, 1)
+            oled.pixel(3, 29, 1)
+            oled.pixel(4, 28, 1)
+            oled.pixel(4, 27, 1)
+            oled.pixel(4, 26, 1)
+            oled.pixel(4, 25, 1)
+            oled.pixel(5, 24, 1)
+            oled.pixel(6, 23, 1)
+            oled.pixel(7, 23, 1)
             oled.pixel(8, 24, 1)
-            oled.pixel(9, 23, 1)
-            oled.pixel(10, 24, 1)
-            oled.pixel(10, 25, 1)
-            oled.pixel(11, 26, 1)
-            oled.pixel(12, 27, 1)
-            oled.pixel(12, 28, 1)
-            oled.pixel(12, 29, 1)
-            oled.pixel(13, 30, 1)
+            oled.pixel(9, 25, 1)
+            oled.pixel(9, 26, 1)
+            oled.pixel(9, 27, 1)
+            oled.pixel(10, 28, 1)
+            oled.pixel(10, 29, 1)
+            oled.pixel(11, 30, 1)
+            oled.pixel(12, 31, 1)
+            oled.pixel(13, 31, 1)
             oled.pixel(14, 30, 1)
-            oled.pixel(15, 31, 1)
-        elif self.outputSlewModes[self.selectedOutput] == 4: # sharkTooth
+            oled.pixel(15, 29, 1)
+            oled.pixel(15, 28, 1)
+            oled.pixel(15, 27, 1)
+            oled.pixel(15, 26, 1)
+            oled.pixel(16, 25, 1)
+            oled.pixel(16, 24, 1)
+            oled.pixel(16, 23, 1)
+
+        elif self.outputSlewModes[self.selectedOutput] == 3:  # expUpexpDown
+            oled.pixel(3,31,1)
+            oled.pixel(4,30,1)
+            oled.pixel(10,30,1)
+            oled.pixel(12,30,1)
+            oled.vline(5,28, 2, 1)
+            oled.vline(9,28, 2, 1)
+            oled.vline(13,28, 2, 1)
+            oled.vline(6,26, 2, 1)
+            oled.vline(8,26, 2, 1)
+            oled.vline(14,26, 2, 1)
+            oled.vline(7,23, 3, 1)
+            oled.vline(15,23, 3, 1)
+            oled.pixel(11,31,1)
+
+        elif self.outputSlewModes[self.selectedOutput] == 4:  # sharkTooth
             oled.pixel(3, 30, 1)
             oled.pixel(3, 29, 1)
             oled.pixel(3, 28, 1)
@@ -649,7 +746,7 @@ class EgressusMelodium(EuroPiScript):
             oled.pixel(13, 29, 1)
             oled.pixel(14, 29, 1)
             oled.pixel(15, 30, 1)
-        elif self.outputSlewModes[self.selectedOutput] == 5: # sharkToothReverse
+        elif self.outputSlewModes[self.selectedOutput] == 5:  # sharkToothReverse
             oled.pixel(3, 30, 1)
             oled.pixel(4, 29, 1)
             oled.pixel(5, 29, 1)
@@ -669,49 +766,28 @@ class EgressusMelodium(EuroPiScript):
             oled.pixel(15, 28, 1)
             oled.pixel(15, 29, 1)
             oled.pixel(15, 30, 1)
-        elif self.outputSlewModes[self.selectedOutput] == 6: # logUpStepDown
-            oled.pixel(5, 31, 1)
-            oled.pixel(5, 30, 1)
-            oled.pixel(6, 29, 1)
-            oled.pixel(7, 28, 1)
-            oled.pixel(7, 27, 1)
-            oled.pixel(8, 26, 1)
-            oled.pixel(8, 25, 1)
-            oled.pixel(9, 24, 1)
-            oled.pixel(10, 23, 1)
-            oled.pixel(11, 23, 1)
-            oled.pixel(12, 23, 1)
-            oled.pixel(13, 33, 1)
-            oled.pixel(13, 24, 1)
-            oled.pixel(13, 25, 1)
-            oled.pixel(13, 26, 1)
-            oled.pixel(13, 27, 1)
-            oled.pixel(13, 28, 1)
-            oled.pixel(13, 29, 1)
-            oled.pixel(13, 30, 1)
-            oled.pixel(13, 31, 1)
-        elif self.outputSlewModes[self.selectedOutput] == 7: # stepUpExpDown
-            oled.pixel(5, 31, 1)
-            oled.pixel(5, 30, 1)
-            oled.pixel(5, 29, 1)
-            oled.pixel(5, 28, 1)
-            oled.pixel(5, 27, 1)
-            oled.pixel(5, 26, 1)
-            oled.pixel(5, 25, 1)
-            oled.pixel(5, 24, 1)
-            oled.pixel(5, 23, 1)
-            oled.pixel(6, 23, 1)
-            oled.pixel(7, 24, 1)
-            oled.pixel(7, 25, 1)
-            oled.pixel(8, 26, 1)
-            oled.pixel(9, 27, 1)
-            oled.pixel(9, 28, 1)
-            oled.pixel(10, 29, 1)
-            oled.pixel(11, 30, 1)
-            oled.pixel(12, 31, 1)
-            oled.pixel(13, 31, 1)
+        elif self.outputSlewModes[self.selectedOutput] == 6:  # logUpStepDown
+            oled.vline(3,28, 4, 1)
+            oled.hline(6,24, 9, 1)
+            oled.pixel(4,26,1)
+            oled.pixel(4,27,1)
+            oled.pixel(5,25,1)
+            oled.vline(15,24, 8, 1)
+        elif self.outputSlewModes[self.selectedOutput] == 7:  # stepUpExpDown
+            oled.hline(4,24, 7, 1)
+            oled.vline(4,24, 8, 1)
+            oled.pixel(10,24,1)
+            oled.pixel(10,25,1)
+            oled.pixel(10,26,1)
+            oled.pixel(11,27,1)
+            oled.pixel(11,28,1)
+            oled.pixel(12,29,1)
+            oled.pixel(12,30,1)
+            oled.pixel(13,31,1)
+            oled.pixel(14,31,1)
 
-    '''Update the screen only if something has changed. oled.show() hogs the processor and causes latency.'''
+    """Update the screen only if something has changed. oled.show() hogs the processor and causes latency."""
+
     def updateScreen(self):
 
         # Only update if something has changed
@@ -720,108 +796,136 @@ class EgressusMelodium(EuroPiScript):
         # Clear screen
         oled.fill(0)
 
-        oled.fill_rect(0, 0, 20, 32, 0)
-        oled.fill_rect(0, 0, 20, 9, 1)
-        oled.text(f'{self.selectedOutput + 1}', 6, 1, 0)
-        
-        number = self.outputDivisions[self.selectedOutput]
-        x = 2 if number >= 10 else 6
-        oled.text(f'{number}', x, 12, 1)
+        # Selected output
+        oled.fill_rect(108, 0, 20, 9, 1)
+        oled.text(f"{self.selectedOutput + 1}", 115, 1, 0)
 
-        self.draw_wave()
+        # Show division for selected output
+        number = self.outputDivisions[self.selectedOutput]
+        x = 111 if number >= 10 else 115
+        oled.text(f"{number}", x, 12, 1)
+
+        # Show wave for selected output
+        self.drawWave()
 
         if self.unClockedMode:
 
             if self.averageMsBetweenClocks != 0:
-                oled.text(f"{self.averageMsBetweenClocks * 2}ms", 24, 1, 1)
-        
+                oled.text(f"{int(self.averageMsBetweenClocks * 2)} ms", 31, 1, 1)
+
         else:
 
             # Draw pattern length
-            row1 = ''
-            row2 = ''
-            row3 = ''
-            row4 = ''
+            row1 = ""
+            row2 = ""
+            row3 = ""
+            row4 = ""
             if self.patternLength > 24:
                 # draw two rows
-                row1 = '........'
-                row2 = '........'
-                row3 = '........'
+                row1 = "........"
+                row2 = "........"
+                row3 = "........"
                 for i in range(24, self.patternLength):
-                    row4 = row4 + '.'
+                    row4 = row4 + "."
             elif self.patternLength > 16:
-                row1 = '........'
-                row2 = '........'
+                row1 = "........"
+                row2 = "........"
                 for i in range(16, self.patternLength):
-                    row3 = row3 + '.'
+                    row3 = row3 + "."
             elif self.patternLength > 8:
-                row1 = '........'
+                row1 = "........"
                 for i in range(8, self.patternLength):
-                    row2 = row2 + '.'
+                    row2 = row2 + "."
             else:
                 # draw one row
                 for i in range(self.patternLength):
-                    row1 = row1 + '.'
+                    row1 = row1 + "."
 
-            xStart = 40
-            oled.text(row1,xStart, 0, 1)
-            oled.text(row2,xStart, 6, 1)
-            oled.text(row3,xStart, 12, 1)
-            oled.text(row4,xStart, 18, 1)
+            xStart = 31
+            oled.text(row1, xStart, 0, 1)
+            oled.text(row2, xStart, 6, 1)
+            oled.text(row3, xStart, 12, 1)
+            oled.text(row4, xStart, 18, 1)
 
+        # Draw a visual cue for when a long button press has been detected
+        # and a new random pattern is being generated
         if self.shreadedVis:
-            oled.text('*', 22, 12, 1)
+            oled.fill_rect(0, 0, 20, 9, 1)
+            oled.pixel(2, 8, 0)
+            oled.pixel(2, 7, 0)
+            oled.pixel(2, 6, 0)
+            oled.pixel(3, 5, 0)
+            oled.pixel(3, 4, 0)
+            oled.pixel(4, 3, 0)
+            oled.pixel(5, 3, 0)
+            oled.pixel(6, 4, 0)
+            oled.pixel(7, 5, 0)
+            oled.pixel(8, 5, 0)
+            oled.pixel(9, 4, 0)
+            oled.pixel(9, 3, 0)
+            oled.pixel(9, 2, 0)
+            oled.pixel(10, 1, 0)
+            oled.pixel(11, 2, 0)
+            oled.pixel(12, 3, 0)
+            oled.pixel(12, 4, 0)
+            oled.pixel(13, 5, 0)
+            oled.pixel(13, 6, 0)
+            oled.pixel(14, 7, 0)
+            oled.pixel(15, 8, 0)
 
         oled.show()
 
-# -----------------------------
-# Slew functions
-# -----------------------------
+    # -----------------------------
+    # Slew functions
+    # -----------------------------
 
-    '''Produces step up, step down'''
+    """Produces step up, step down"""
+
     def stepUpStepDown(self, start, stop, num, buffer):
         c = 0
-        if self.patternLength == 1: # LFO Mode, make sure we complete a full cycle
-            for i in range(num/2):
+        if self.patternLength == 1:  # LFO Mode, make sure we complete a full cycle
+            for i in range(num / 2):
                 buffer[c] = start
                 c += 1
-            for i in range(num/2):
+            for i in range(num / 2):
                 buffer[c] = stop
                 c += 1
         else:
-            for i in range(num-1):
+            for i in range(num - 1):
                 buffer[c] = stop
                 c += 1
         return buffer
 
-    '''Produces linear transitions'''
+    """Produces a linear transition"""
+
     def linspace(self, start, stop, num, buffer):
         c = 0
-        num = max(1, num) # avoid divide by zero
-        diff = (float(stop) - start)/(num)
-        for i in range(num ):
-            val = ((diff * i) + start)
+        num = max(1, num)  # avoid divide by zero
+        diff = (float(stop) - start) / (num)
+        for i in range(num):
+            val = (diff * i) + start
             buffer[c] = val
             c += 1
         return buffer
 
-    '''Produces log up, step down'''
+    """Produces log up, step down"""
+
     def logUpStepDown(self, start, stop, num, buffer):
         c = 0
-        if self.patternLength == 1: # LFO Mode, make sure we complete a full cycle
-            for i in range(num/2):
+        if self.patternLength == 1:  # LFO Mode, make sure we complete a full cycle
+            for i in range(num / 2):
                 i = max(i, 1)
-                x = 1 - ((stop - float(start))/(i)) + (stop-1)
+                x = 1 - ((stop - float(start)) / (i)) + (stop - 1)
                 buffer[c] = x
                 c += 1
-            for i in range(num/2):
+            for i in range(num / 2):
                 buffer[c] = stop
                 c += 1
         else:
             if stop >= start:
                 for i in range(num):
                     i = max(i, 1)
-                    x = 1 - ((stop - float(start))/(i)) + (stop-1)
+                    x = 1 - ((stop - float(start)) / (i)) + (stop - 1)
                     buffer[c] = x
                     c += 1
             else:
@@ -830,13 +934,14 @@ class EgressusMelodium(EuroPiScript):
                     c += 1
         return buffer
 
-    '''Produces step up, exp down'''
+    """Produces step up, exp down"""
+
     def stepUpExpDown(self, start, stop, num, buffer):
         c = 0
         if stop <= start:
-            for i in range(num-1):
+            for i in range(num):
                 i = max(i, 1)
-                x = 1 - ((stop - float(start))/(i)) + (stop-1)
+                x = 1 - ((stop - float(start)) / (i)) + (stop - 1)
                 buffer[c] = x
                 c += 1
         else:
@@ -845,11 +950,14 @@ class EgressusMelodium(EuroPiScript):
                 c += 1
         return buffer
 
-    '''Produces smooth curve using half a cosine wave'''
+    """Produces smooth curve using half a cosine wave"""
+
     def smooth(self, start, stop, sampleRate, buffer):
         c = 0
-        freqHz = 0.5 # We want to complete half a cycle
-        amplitude = abs((stop - start) / 2) # amplitude is half of the diff between start and stop (this is peak to peak)
+        freqHz = 0.5  # We want to complete half a cycle
+        amplitude = abs(
+            (stop - start) / 2
+        )  # amplitude is half of the diff between start and stop (this is peak to peak)
         if start <= stop:
             # Starting position is 90 degrees (cos) at 'start' volts
             startOffset = sampleRate
@@ -860,88 +968,110 @@ class EgressusMelodium(EuroPiScript):
             amplitudeOffset = stop
         for i in range(sampleRate):
             i += startOffset
-            val = amplitude + float(amplitude * math.cos(2 * math.pi * freqHz * i / float(sampleRate)))
-            buffer[c] = round(val+amplitudeOffset,4)
+            val = amplitude + float(
+                amplitude * math.cos(2 * math.pi * freqHz * i / float(sampleRate))
+            )
+            buffer[c] = round(val + amplitudeOffset, 4)
             c += 1
         return buffer
 
-    '''Produces a pointy exponential wave using a quarter cosine'''
+    """Produces a pointy exponential wave using a quarter cosine"""
+
     def expUpexpDown(self, start, stop, sampleRate, buffer):
         c = 0
-        freqHz = 0.25 # We want to complete quarter of a cycle
-        amplitude = abs((stop - start)) # amplitude is half of the diff between start and stop (this is peak to peak)
+        freqHz = 0.25  # We want to complete quarter of a cycle
+        amplitude = abs(
+            (stop - start)
+        )  # amplitude is half of the diff between start and stop (this is peak to peak)
         if start <= stop:
             startOffset = sampleRate * 2
             amplitudeOffset = start
             for i in range(sampleRate):
                 i += startOffset
-                val = amplitude + float(amplitude * math.cos(2 * math.pi * freqHz * i / float(sampleRate)))
-                buffer[c] = round(val+amplitudeOffset,4)
+                val = amplitude + float(
+                    amplitude * math.cos(2 * math.pi * freqHz * i / float(sampleRate))
+                )
+                buffer[c] = round(val + amplitudeOffset, 4)
                 c += 1
         else:
             startOffset = sampleRate
             amplitudeOffset = stop
             for i in range(sampleRate):
                 i += startOffset
-                val = amplitude + float(amplitude * math.cos(2 * math.pi * freqHz * i / float(sampleRate)))
-                buffer[c] = round(val+amplitudeOffset,4)
+                val = amplitude + float(
+                    amplitude * math.cos(2 * math.pi * freqHz * i / float(sampleRate))
+                )
+                buffer[c] = round(val + amplitudeOffset, 4)
                 c += 1
         return buffer
 
-    '''Produces a log(ish) up and exponential(ish) down using a quarter cosine'''
+    """Produces a log(ish) up and exponential(ish) down using a quarter cosine"""
+
     def sharkTooth(self, start, stop, sampleRate, buffer):
         c = 0
-        freqHz = 0.25 # We want to complete quarter of a cycle
-        amplitude = abs((stop - start)) # amplitude is half of the diff between start and stop (this is peak to peak)
+        freqHz = 0.25  # We want to complete quarter of a cycle
+        amplitude = abs(
+            (stop - start)
+        )  # amplitude is half of the diff between start and stop (this is peak to peak)
         if start <= stop:
             startOffset = sampleRate * 3
             amplitudeOffset = start - amplitude
             for i in range(sampleRate):
                 i += startOffset
-                val = amplitude + float(amplitude * math.cos(2 * math.pi * freqHz * i / float(sampleRate)))
-                buffer[c] = round(val+amplitudeOffset,4)
+                val = amplitude + float(
+                    amplitude * math.cos(2 * math.pi * freqHz * i / float(sampleRate))
+                )
+                buffer[c] = round(val + amplitudeOffset, 4)
                 c += 1
         else:
             startOffset = sampleRate
             amplitudeOffset = stop
             for i in range(sampleRate):
                 i += startOffset
-                val = amplitude + float(amplitude * math.cos(2 * math.pi * freqHz * i / float(sampleRate)))
-                buffer[c] = round(val+amplitudeOffset,4)
+                val = amplitude + float(
+                    amplitude * math.cos(2 * math.pi * freqHz * i / float(sampleRate))
+                )
+                buffer[c] = round(val + amplitudeOffset, 4)
                 c += 1
         return buffer
 
-    '''Produces an exponential(ish) up and log(ish) down using a quarter cosine'''
+    """Produces an exponential(ish) up and log(ish) down using a quarter cosine"""
+
     def sharkToothReverse(self, start, stop, sampleRate, buffer):
         c = 0
-        freqHz = 0.25 # We want to complete quarter of a cycle
-        amplitude = abs((stop - start)) # amplitude is half of the diff between start and stop (this is peak to peak)
+        freqHz = 0.25  # We want to complete quarter of a cycle
+        amplitude = abs(
+            (stop - start)
+        )  # amplitude is half of the diff between start and stop (this is peak to peak)
         if start <= stop:
             startOffset = sampleRate * 2
             amplitudeOffset = start
             for i in range(sampleRate):
                 i += startOffset
-                val = amplitude + float(amplitude * math.cos(2 * math.pi * freqHz * i / float(sampleRate)))
-                buffer[c] = round(val+amplitudeOffset,4)
+                val = amplitude + float(
+                    amplitude * math.cos(2 * math.pi * freqHz * i / float(sampleRate))
+                )
+                buffer[c] = round(val + amplitudeOffset, 4)
                 c += 1
         else:
             startOffset = 0
             amplitudeOffset = 1 - (amplitude - stop + 1)
             for i in range(sampleRate):
                 i += startOffset
-                val = amplitude + float(amplitude * math.cos(2 * math.pi * freqHz * i / float(sampleRate)))
-                buffer[c] = round(val+amplitudeOffset,4)
+                val = amplitude + float(
+                    amplitude * math.cos(2 * math.pi * freqHz * i / float(sampleRate))
+                )
+                buffer[c] = round(val + amplitudeOffset, 4)
                 c += 1
         return buffer
+
+    """Generator function that returns the next slew sample from the specified list (arr)"""
 
     def slewGenerator(self, arr):
         for s in range(len(arr)):
             yield arr[s]
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     dm = EgressusMelodium()
     dm.main()
-
-
-
-
