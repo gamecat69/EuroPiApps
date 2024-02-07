@@ -26,9 +26,9 @@ Known Issues:
 """
 Possible future work:
 
-- UX: When in unclocked mode the pattern length cannot be changed - change UI? Or maybe restrict pattern length to 1 (LFO mode only in unclocked mode?)
-- Find a use for ain? Change unClocked clock time?
-- See if performance can be optimized to work with clock inputs < 15ms
+- Med [UX]: When in unclocked mode the pattern length cannot be changed - change UI? Or maybe restrict pattern length to 1 (LFO mode only in unclocked mode?)
+- Low [FEATURE]: Find a use for ain? Change unClocked clock time?
+- High [PERF]: See if performance can be optimized to work with clock inputs < 15ms
 
 Doc: Update .md file
 
@@ -89,7 +89,7 @@ SLEW_BUFFER_SIZE_IN_SAMPLES = int(
 )
 
 # How much to print to the console?
-DEBUG_MODE = 0  # 0:Nothing, 1:Some things, 2:Lots, 3: Maybe a bit too much for some
+DEBUG_MODE = 2  # 0:Nothing, 1:Some things, 2:Lots, 3: Maybe a bit too much for some
 
 KNOB_CHANGE_TOLERANCE = 0.999
 
@@ -415,24 +415,27 @@ class EgressusMelodium(EuroPiScript):
                                 # Print an error if we are 2 or more samples out
                                 if diff >= 2:
                                     print(
-                                        f"[{self.clockStep}][{idx}] Buffer underrun ({diff}). Using previous voltage: {self.previousOutputVoltage[idx]}"
+                                        f"[{self.clockStep}][{idx}] Buffer underrun [{self.bufferUnderrunCounter[idx]}] ({diff}). Using previous voltage: {self.previousOutputVoltage[idx]}"
                                     )
                                     print(
                                         f"[{self.clockStep}][{idx}] Current sample num: {self.slewBufferPosition[idx]} Buffer size: {self.slewBufferSampleNum[idx]}"
                                     )
 
-                        if self.running:
-                            self.slewBufferPosition[idx] += 1
+                        # Advance the position in the sample/slew buffer
+                        self.slewBufferPosition[idx] += 1
 
                     except StopIteration:
                         # we shouldn't ever get here...
-                        if DEBUG_MODE == 1:
+                        if DEBUG_MODE == 2:
                             print(f"[{self.clockStep}][{idx}] ERROR: StopIteration")
                         continue
+                    except Exception as e:
+                        if DEBUG_MODE == 2:
+                            print(f"[{self.clockStep}][{idx}] ERROR: Exception: {e}")
+                        continue
 
-                    if self.running:
-                        # self.slewSampleCounter += 1
-                        self.lastSlewVoltageOutputTime[idx] = ticks_ms()
+                    # Update the last sample output time
+                    self.lastSlewVoltageOutputTime[idx] = ticks_ms()
 
             # If we are not being clocked, trigger a clock after the configured clock time
             if (
