@@ -75,6 +75,8 @@ sample rate automatically. This causes the sample rate to be at the minium when 
 Conversely, when there is a fast clock and low output division a higher sample rate is used.
 
 """
+# Minimum allowed time between incoming 16th note clocks. Smaller values are too fast for poor ole micropython to keep up
+MIN_CLOCK_TIME_MS = 50
 
 # Maximum allowed time between incoming 16th note clocks. This is 2 BPM, larger value causes memory issues unless the next two vals are halfed
 MAX_CLOCK_TIME_MS = 3750
@@ -89,7 +91,7 @@ SLEW_BUFFER_SIZE_IN_SAMPLES = int(
 )
 
 # How much to print to the console?
-DEBUG_MODE = 2  # 0:Nothing, 1:Some things, 2:Lots, 3: Maybe a bit too much for some
+DEBUG_MODE = 0  # 0:Nothing, 1:Some things, 2:Lots, 3: Maybe a bit too much for some
 
 KNOB_CHANGE_TOLERANCE = 0.999
 
@@ -100,6 +102,9 @@ MAX_STEP_LENGTH = 32
 # Diff between incoming clocks are stored in the buffer and averaged
 # 5 seems deal with wonky clocks quite well
 CLOCK_DIFF_BUFFER_LEN = 5
+
+# If the clock rate changes more than this, trigger a recalculation
+MIN_CLOCK_CHANGE_DETECTION_MS = 100
 
 class EgressusMelodium(EuroPiScript):
     def __init__(self):
@@ -165,13 +170,12 @@ class EgressusMelodium(EuroPiScript):
         self.unClockedMode = False
         self.unClockedModeIndicator = ["", "U"]
         self.lastClockTime = ticks_ms()
-        self.minLfoCycleMs = 50
         self.bpm = 0
         self.previousOutputVoltage = [0, 0, 0, 0, 0, 0]
         self.slewBufferSampleNum = [0, 0, 0, 0, 0, 0]
         self.slewBufferPosition = [0, 0, 0, 0, 0, 0]
         self.bufferSampleOffsets = [0, 0, 0, 0, 0, 0]
-        self.squareLfoFlipFlops = [False, False, False, False, False, False]
+        #self.squareLfoFlipFlops = [False, False, False, False, False, False]
         self.squareOutputs = [0, 0, 0, 0, 0, 0]
 
         self.loadState()
@@ -213,24 +217,35 @@ class EgressusMelodium(EuroPiScript):
 
             if not self.unClockedMode:
 
-                # calculate different between input clock triggers using a FiFo list (inputClockDiffs)
+                # Get the time difference since the last clockTime 
                 newDiffBetweenClocks = min(MAX_CLOCK_TIME_MS, ticks_ms() - self.lastClockTime)
                 self.lastClockTime = ticks_ms()
-                # Add time diff between clocks to inputClockDiffs list, skipping the first as we have no reference
+
+                # Add time diff between clocks to inputClockDiffs Fifo list, skipping the first clock as we have no reference
                 if self.clockStep > 0:
                     self.inputClockDiffs[self.clockStep % CLOCK_DIFF_BUFFER_LEN] = (
                         newDiffBetweenClocks
                     )
 
-                # Attempt to BPM change and sync to it
-                if self.clockStep >= CLOCK_DIFF_BUFFER_LEN:
-                    newBpm = self.calculateBpm(self.inputClockDiffs)
-                    # Resync If BPM difference is >= 2
-                    if abs(newBpm - self.bpm) >= 2:
-                        self.bpm = newBpm
-                        self.averageMsBetweenClocks = self.average(self.inputClockDiffs)
-                        # clock rate or output division changed, calculate optimal sample rate
-                        self.calculateOptimalSampleRate()
+                # Alternate clock rate change detection - IN TEST
+                if self.clockStep >= CLOCK_DIFF_BUFFER_LEN and abs(newDiffBetweenClocks - self.averageMsBetweenClocks) > MIN_CLOCK_CHANGE_DETECTION_MS:
+                    if DEBUG_MODE == 3:
+                        print(f"clock rate changed by {abs(newDiffBetweenClocks - self.averageMsBetweenClocks)}")
+                    # Update average ms between clocks
+                    self.averageMsBetweenClocks = self.average(self.inputClockDiffs)
+                    # Clock rate or output division changed, recalculate optimal sample rate
+                    self.calculateOptimalSampleRate()
+
+                # Original clock rate change detection using a BPM
+                # # Attempt to detect BPM change and sync to it
+                # if self.clockStep >= CLOCK_DIFF_BUFFER_LEN:
+                #     nwBpm = self.calculateBpm(self.inputClockDiffs)
+                #     # Resync If BPM difference is >= 2
+                #     if abs(newBpm - self.bpm) >= 2:
+                #         self.bpm = newBpm
+                #         self.averageMsBetweenClocks = self.average(self.inputClockDiffs)
+                #         # clock rate or output division changed, calculate optimal sample rate
+                #         self.calculateOptimalSampleRate()
 
                 self.handleClockStep()
                 # Incremenent the clock step
@@ -537,10 +552,9 @@ class EgressusMelodium(EuroPiScript):
 
                     # If square transition, set next output value to be one of the voltage extremes (flipping each time)
                     if self.outputSlewModes[idx] == 0:
-                        self.squareLfoFlipFlops[idx] = not self.squareLfoFlipFlops[idx]
-                        self.squareOutputs[idx] = self.voltageExtremes[
-                            int(self.squareLfoFlipFlops[idx])
-                        ]
+                        #self.squareLfoFlipFlops[idx] = not self.squareLfoFlipFlops[idx]
+                        #self.squareOutputs[idx] = self.voltageExtremes[int(self.squareLfoFlipFlops[idx])]
+                        self.squareOutputs[idx] = self.voltageExtremes[int(self.outputVoltageFlipFlops[idx])]
                     else:
                         self.slewArray = self.slewShapes[self.outputSlewModes[idx]](
                             self.voltageExtremes[int(self.outputVoltageFlipFlops[idx])],
@@ -586,11 +600,8 @@ class EgressusMelodium(EuroPiScript):
         if abs(self.currentK1Reading - self.lastK1Reading) > KNOB_CHANGE_TOLERANCE:
             # knob has moved
             if self.unClockedMode:
-                # Set LFO speed
-                self.averageMsBetweenClocks = max(
-                    self.minLfoCycleMs,
-                    int((MAX_CLOCK_TIME_MS / 100) * (self.currentK1Reading - 1)) + 1,
-                )
+                # Set clock speed based on k1 value. This calc creates knob increments of 75ms
+                self.averageMsBetweenClocks = self.currentK1Reading * (MAX_CLOCK_TIME_MS / MIN_CLOCK_TIME_MS) / 2
 
                 # clock rate or output division changed, calculate optimal sample rate
                 self.calculateOptimalSampleRate()
