@@ -259,7 +259,7 @@ class EgressusMelodium(EuroPiScript):
                 ticks_diff(ticks_ms(), b1.last_pressed()) > 2000
                 and ticks_diff(ticks_ms(), b1.last_pressed()) < 5000
             ):
-                # long press
+                # long press generate new CV pattern
                 self.generateNewRandomCVPattern(new=False, activePatternOnly=True)
                 self.shreadedVis = True
                 self.screenRefreshNeeded = True
@@ -270,7 +270,7 @@ class EgressusMelodium(EuroPiScript):
                 # self.saveState()
                 pass
             else:
-                # short press
+                # short press change slew mode
                 self.outputSlewModes[self.selectedOutput] = (
                     self.outputSlewModes[self.selectedOutput] + 1
                 ) % len(self.slewShapes)
@@ -285,17 +285,16 @@ class EgressusMelodium(EuroPiScript):
                 ticks_diff(ticks_ms(), b2.last_pressed()) > 2000
                 and ticks_diff(ticks_ms(), b2.last_pressed()) < 5000
             ):
-                # long press
-                # self.saveState()
-                pass
-            elif ticks_diff(ticks_ms(), b2.last_pressed()) > 300:
-                # medium press
+                # long press change to unclocked mode
                 self.unClockedMode = not self.unClockedMode
                 if self.unClockedMode:
                     self.running = True
                 self.saveState()
+            elif ticks_diff(ticks_ms(), b2.last_pressed()) > 300:
+                # medium press
+                pass
             else:
-                # short press
+                # short press change selected output
                 self.selectedOutput = (self.selectedOutput + 1) % 6
                 self.screenRefreshNeeded = True
                 self.saveState()
