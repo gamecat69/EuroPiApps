@@ -19,7 +19,7 @@ labels: sequencer, CV, Clocked LFO, randomness
 Known Issues:
 - When the clock rate or output division changes significantly this creates temporary wave shape discontinuities
 - Input clocks > 150BPM can cause waveshape glitches. Workaround this by dividing the clock first if working at 150BPM or higher.
-- Some input clocks < 15ms can be missed causing glitchy waves to be output
+- Some input clocks < 18ms can be missed causing glitchy waves to he output or CV pattern steps to be missed
 
 """
 
@@ -106,6 +106,7 @@ CLOCK_DIFF_BUFFER_LEN = 5
 # If the clock rate changes more than this, trigger a recalculation
 MIN_CLOCK_CHANGE_DETECTION_MS = 100
 
+
 class EgressusMelodium(EuroPiScript):
     def __init__(self):
 
@@ -113,7 +114,7 @@ class EgressusMelodium(EuroPiScript):
         self.clockStep = 0
         self.stepPerOutput = [0, 0, 0, 0, 0, 0]
         self.nextStepPerOutput = [0, 0, 0, 0, 0, 0]
-        #self.minAnalogInputVoltage = 0.5
+        # self.minAnalogInputVoltage = 0.5
         self.CvPattern = 0
         self.resetTimeout = MAX_CLOCK_TIME_MS
         self.screenRefreshNeeded = True
@@ -175,7 +176,7 @@ class EgressusMelodium(EuroPiScript):
         self.slewBufferSampleNum = [0, 0, 0, 0, 0, 0]
         self.slewBufferPosition = [0, 0, 0, 0, 0, 0]
         self.bufferSampleOffsets = [0, 0, 0, 0, 0, 0]
-        #self.squareLfoFlipFlops = [False, False, False, False, False, False]
+        # self.squareLfoFlipFlops = [False, False, False, False, False, False]
         self.squareOutputs = [0, 0, 0, 0, 0, 0]
 
         self.loadState()
@@ -217,7 +218,7 @@ class EgressusMelodium(EuroPiScript):
 
             if not self.unClockedMode:
 
-                # Get the time difference since the last clockTime 
+                # Get the time difference since the last clockTime
                 newDiffBetweenClocks = min(MAX_CLOCK_TIME_MS, ticks_ms() - self.lastClockTime)
                 self.lastClockTime = ticks_ms()
 
@@ -228,9 +229,15 @@ class EgressusMelodium(EuroPiScript):
                     )
 
                 # Alternate clock rate change detection - IN TEST
-                if self.clockStep >= CLOCK_DIFF_BUFFER_LEN and abs(newDiffBetweenClocks - self.averageMsBetweenClocks) > MIN_CLOCK_CHANGE_DETECTION_MS:
+                if (
+                    self.clockStep >= CLOCK_DIFF_BUFFER_LEN
+                    and abs(newDiffBetweenClocks - self.averageMsBetweenClocks)
+                    > MIN_CLOCK_CHANGE_DETECTION_MS
+                ):
                     if DEBUG_MODE == 3:
-                        print(f"clock rate changed by {abs(newDiffBetweenClocks - self.averageMsBetweenClocks)}")
+                        print(
+                            f"clock rate changed by {abs(newDiffBetweenClocks - self.averageMsBetweenClocks)}"
+                        )
                     # Update average ms between clocks
                     self.averageMsBetweenClocks = self.average(self.inputClockDiffs)
                     # Clock rate or output division changed, recalculate optimal sample rate
@@ -290,7 +297,7 @@ class EgressusMelodium(EuroPiScript):
                 if self.unClockedMode:
                     self.running = True
                 self.saveState()
-                
+
                 # Update previous knob values to avoid them changing when the mode changes
                 self.lastK1Reading = self.currentK1Reading
                 self.lastK2Reading = self.currentK2Reading
@@ -356,12 +363,12 @@ class EgressusMelodium(EuroPiScript):
     """Generate new CV pattern for existing bank or create a new bank"""
 
     def generateNewRandomCVPattern(self, new=True, activePatternOnly=False):
-    # Note: This function is capable of working with multiple pattern banks
-    #  However, due to current memory limitations onlly one pattern bank is used
+        # Note: This function is capable of working with multiple pattern banks
+        #  However, due to current memory limitations onlly one pattern bank is used
         try:
             gc.collect()
             if new:
-            # new flag provided, create new list
+                # new flag provided, create new list
                 if activePatternOnly:
                     self.cvPatternBanks[self.selectedOutput].append(
                         self.generateRandomPattern(MAX_STEP_LENGTH, 0, MAX_CV_VOLTAGE)
@@ -372,7 +379,7 @@ class EgressusMelodium(EuroPiScript):
                             self.generateRandomPattern(MAX_STEP_LENGTH, 0, MAX_CV_VOLTAGE)
                         )
             else:
-            # Update existing list
+                # Update existing list
                 if activePatternOnly:
                     self.cvPatternBanks[self.selectedOutput][self.CvPattern] = (
                         self.generateRandomPattern(MAX_STEP_LENGTH, 0, MAX_CV_VOLTAGE)
@@ -557,9 +564,11 @@ class EgressusMelodium(EuroPiScript):
 
                     # If square transition, set next output value to be one of the voltage extremes (flipping each time)
                     if self.outputSlewModes[idx] == 0:
-                        #self.squareLfoFlipFlops[idx] = not self.squareLfoFlipFlops[idx]
-                        #self.squareOutputs[idx] = self.voltageExtremes[int(self.squareLfoFlipFlops[idx])]
-                        self.squareOutputs[idx] = self.voltageExtremes[int(self.outputVoltageFlipFlops[idx])]
+                        # self.squareLfoFlipFlops[idx] = not self.squareLfoFlipFlops[idx]
+                        # self.squareOutputs[idx] = self.voltageExtremes[int(self.squareLfoFlipFlops[idx])]
+                        self.squareOutputs[idx] = self.voltageExtremes[
+                            int(self.outputVoltageFlipFlops[idx])
+                        ]
                     else:
                         self.slewArray = self.slewShapes[self.outputSlewModes[idx]](
                             self.voltageExtremes[int(self.outputVoltageFlipFlops[idx])],
@@ -595,7 +604,6 @@ class EgressusMelodium(EuroPiScript):
         if self.clockStep > self.shreadedVisClockStep + 2:
             self.shreadedVis = False
 
-
     """Get the k1 value, update params if changed"""
 
     def getK1Value(self):
@@ -606,16 +614,16 @@ class EgressusMelodium(EuroPiScript):
             # knob has moved
             if self.unClockedMode:
                 # Set clock speed based on k1 value. This calc creates knob increments of 75ms
-                self.averageMsBetweenClocks = self.currentK1Reading * (MAX_CLOCK_TIME_MS / MIN_CLOCK_TIME_MS) / 2
+                self.averageMsBetweenClocks = (
+                    self.currentK1Reading * (MAX_CLOCK_TIME_MS / MIN_CLOCK_TIME_MS) / 2
+                )
 
                 # clock rate or output division changed, calculate optimal sample rate
                 self.calculateOptimalSampleRate()
 
             else:
                 # Set pattern length
-                self.patternLength = (
-                    int((MAX_STEP_LENGTH / 100) * (self.currentK1Reading - 1)) + 1
-                )
+                self.patternLength = int((MAX_STEP_LENGTH / 100) * (self.currentK1Reading - 1)) + 1
 
             # Something changed, update screen and save state
             self.saveState()
@@ -731,19 +739,19 @@ class EgressusMelodium(EuroPiScript):
             oled.pixel(16, 23, 1)
 
         elif self.outputSlewModes[self.selectedOutput] == 3:  # expUpexpDown
-            oled.pixel(3,31,1)
-            oled.pixel(4,30,1)
-            oled.pixel(10,30,1)
-            oled.pixel(12,30,1)
-            oled.vline(5,28, 2, 1)
-            oled.vline(9,28, 2, 1)
-            oled.vline(13,28, 2, 1)
-            oled.vline(6,26, 2, 1)
-            oled.vline(8,26, 2, 1)
-            oled.vline(14,26, 2, 1)
-            oled.vline(7,23, 3, 1)
-            oled.vline(15,23, 3, 1)
-            oled.pixel(11,31,1)
+            oled.pixel(3, 31, 1)
+            oled.pixel(4, 30, 1)
+            oled.pixel(10, 30, 1)
+            oled.pixel(12, 30, 1)
+            oled.vline(5, 28, 2, 1)
+            oled.vline(9, 28, 2, 1)
+            oled.vline(13, 28, 2, 1)
+            oled.vline(6, 26, 2, 1)
+            oled.vline(8, 26, 2, 1)
+            oled.vline(14, 26, 2, 1)
+            oled.vline(7, 23, 3, 1)
+            oled.vline(15, 23, 3, 1)
+            oled.pixel(11, 31, 1)
 
         elif self.outputSlewModes[self.selectedOutput] == 4:  # sharkTooth
             oled.pixel(3, 30, 1)
@@ -786,24 +794,24 @@ class EgressusMelodium(EuroPiScript):
             oled.pixel(15, 29, 1)
             oled.pixel(15, 30, 1)
         elif self.outputSlewModes[self.selectedOutput] == 6:  # logUpStepDown
-            oled.vline(3,28, 4, 1)
-            oled.hline(6,24, 9, 1)
-            oled.pixel(4,26,1)
-            oled.pixel(4,27,1)
-            oled.pixel(5,25,1)
-            oled.vline(15,24, 8, 1)
+            oled.vline(3, 28, 4, 1)
+            oled.hline(6, 24, 9, 1)
+            oled.pixel(4, 26, 1)
+            oled.pixel(4, 27, 1)
+            oled.pixel(5, 25, 1)
+            oled.vline(15, 24, 8, 1)
         elif self.outputSlewModes[self.selectedOutput] == 7:  # stepUpExpDown
-            oled.hline(4,24, 7, 1)
-            oled.vline(4,24, 8, 1)
-            oled.pixel(10,24,1)
-            oled.pixel(10,25,1)
-            oled.pixel(10,26,1)
-            oled.pixel(11,27,1)
-            oled.pixel(11,28,1)
-            oled.pixel(12,29,1)
-            oled.pixel(12,30,1)
-            oled.pixel(13,31,1)
-            oled.pixel(14,31,1)
+            oled.hline(4, 24, 7, 1)
+            oled.vline(4, 24, 8, 1)
+            oled.pixel(10, 24, 1)
+            oled.pixel(10, 25, 1)
+            oled.pixel(10, 26, 1)
+            oled.pixel(11, 27, 1)
+            oled.pixel(11, 28, 1)
+            oled.pixel(12, 29, 1)
+            oled.pixel(12, 30, 1)
+            oled.pixel(13, 31, 1)
+            oled.pixel(14, 31, 1)
 
     """Update the screen only if something has changed. oled.show() hogs the processor and causes latency."""
 
