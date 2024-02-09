@@ -290,6 +290,12 @@ class EgressusMelodium(EuroPiScript):
                 if self.unClockedMode:
                     self.running = True
                 self.saveState()
+                
+                # Update previous knob values to avoid them changing when the mode changes
+                self.lastK1Reading = self.currentK1Reading
+                self.lastK2Reading = self.currentK2Reading
+                self.screenRefreshNeeded = True
+
             elif ticks_diff(ticks_ms(), b2.last_pressed()) > 300:
                 # medium press
                 pass
